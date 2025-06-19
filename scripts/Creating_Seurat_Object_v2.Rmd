@@ -1,0 +1,485 @@
+---
+title: "Creating_Seurat_Object_v2"
+author: "Beth Cragg"
+date: "2025-05-26"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+#Initial data analysis - BC Research Project
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(cowplot)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(pheatmap)
+library(UpSetR)
+theme_set(theme_cowplot())
+```
+
+Load and process data
+
+```{r, echo=false}
+data_dirs <- c(
+  "~/Research_Project/data/filtered/2018_control_leukocytes", 
+  "~/Research_Project/data/filtered/2018_control_mesenchyme",
+  "~/Research_Project/data/filtered/2018_T24_repairing_leukocytes", 
+  "~/Research_Project/data/filtered/2018_T24_repairing_mesenchyme",
+  "~/Research_Project/data/filtered/2020_control_leukocytes", 
+  "~/Research_Project/data/filtered/2020_control_mesenchyme",
+  "~/Research_Project/data/filtered/2020_T48_repairing_leukocytes", 
+  "~/Research_Project/data/filtered/2020_T48_repairing_mesenchyme"
+)
+
+sample_names <- basename(data_dirs)
+seurat_objects <- list()
+
+#loop through each dataset
+for (i in seq_along(data_dirs)) {
+  message("Processing: ", sample_names[i])
+  
+  data <- ReadMtx(
+    mtx = file.path(data_dirs[i], "matrix.mtx.gz"),
+    features = file.path(data_dirs[i], "features.tsv.gz"),
+    cells = file.path(data_dirs[i], "barcodes.tsv.gz"),
+    feature.column = 2
+  )
+  
+  mt.genes <- grep("^mt-", rownames(data), value = TRUE) #mitochdonrial genes
+  rp.genes <- grep("^Rp", rownames(data), value = TRUE) #ribosomal genes
+  
+  percent.mito <- Matrix::colSums(data[mt.genes, , drop = FALSE]) / Matrix::colSums(data)
+  percent.ribo <- Matrix::colSums(data[rp.genes, , drop = FALSE]) / Matrix::colSums(data)
+  
+  #remove mitochondrial and ribosomal genes from the dataset
+  data <- data[!rownames(data) %in% mt.genes, ]
+  data <- data[!rownames(data) %in% rp.genes, ]
+  
+  #Create a Seurat object that only includes genes that are expressed in 3 or more cells (with over 200 genes total)
+  seu <- CreateSeuratObject(counts = data, min.cells = 3, min.features = 200, project = sample_names[i])
+  seu <- AddMetaData(seu, percent.mito, col.name = "percent.mito")
+  seu <- AddMetaData(seu, percent.ribo, col.name = "percent.ribo")
+  
+  seu$timepoint <- if (grepl("T24", sample_names[i])) {
+    "24hrs"
+  } else if (grepl("T48", sample_names[i])) {
+    "48hrs"
+  } else {
+    "cycling"
+  }
+
+  seu$collection <- if (grepl("2018", sample_names[i])) "2018" else "2020"
+  seu$celltype <- if (grepl("leukocytes", sample_names[i])) "leukocytes" else "mesenchyme"
+  seu$sample <- sample_names[i]
+  
+  #Scrublet annotation
+  doublet_scores <- read.csv(file.path(data_dirs[i], "doublet_scores.csv"))
+  predicted_doublets <- read.csv(file.path(data_dirs[i], "predicted_doublets.csv"))
+  seu$doublet_score <- doublet_scores$doublet_score
+  seu$predicted_doublet <- predicted_doublets$predicted_doublet
+  
+  # Define a condition to apply a higher threshold for the 2020_control_mesenchyme dataset
+  if (sample_names[i] == "2020_control_mesenchyme") {
+    seu <- subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1 & doublet_score < 0.5)
+  } else {
+    seu <- subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1 & doublet_score < 0.4)
+  }
+
+  #Normalisation taken from Phoebe's code - needs checking
+  seu <- NormalizeData(seu)
+  seu <- FindVariableFeatures(seu, nfeatures = 2000)
+  
+  #Dimensionality reduction taken from Phoebe's code
+  #seu <- ScaleData(seu)
+  #seu <- RunPCA(seu, npcs = 20)
+  #seu <- RunUMAP(seu, reduction = "pca", dims = 1:20)
+  #seu <- FindNeighbors(seu, dims = 1:20)
+  #seu <- FindClusters(seu, resolution = 0.2)
+  
+  seurat_objects[[sample_names[i]]] <- seu
+  
+  #save individual Seurat objects
+  saveRDS(seu, file = paste0("processed_", sample_names[i], ".rds"))
+}
+
+```
+Integration
+```{r, echo=false}
+## 🔗 Integration and Clustering by cell type
+
+# Define sample groupings by cell type
+leukocyte_samples <- c(
+  "2018_control_leukocytes", "2020_control_leukocytes",
+  "2018_T24_repairing_leukocytes", "2020_T48_repairing_leukocytes"
+)
+
+mesenchyme_samples <- c(
+  "2018_control_mesenchyme", "2020_control_mesenchyme",
+  "2018_T24_repairing_mesenchyme", "2020_T48_repairing_mesenchyme"
+)
+
+# Generalized loader function
+load_samples <- function(sample_names) {
+  lapply(sample_names, function(name) {
+    file_path <- paste0("processed_", name, ".rds")
+    message("Reading file: ", file_path)  # This will show the full file path being read
+    seu <- readRDS(file_path)
+    seu$sample <- name
+    return(seu)
+  })
+}
+
+# Load each group
+leukocyte_objects <- load_samples(leukocyte_samples)
+mesenchyme_objects <- load_samples(mesenchyme_samples)
+
+# Check if doublet_score is properly added
+lapply(leukocyte_objects, function(seu) head(seu@meta.data$doublet_score))
+lapply(mesenchyme_objects, function(seu) head(seu@meta.data$doublet_score))
+
+
+#QC Filtering Function
+qc_filter <- function(seu_list) {
+  lapply(seu_list, function(seu) {
+    subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1 & doublet_score < 0.4)
+  })
+}
+
+#Apply QC Filter
+leukocyte_objects <- qc_filter(leukocyte_objects)
+mesenchyme_objects <- qc_filter(mesenchyme_objects)
+
+
+#Integration: Leukocytes
+# Find anchors and common genes
+anchors_leuk <- FindIntegrationAnchors(object.list = leukocyte_objects, dims = 1:10)
+genes_leuk <- Reduce(intersect, lapply(leukocyte_objects, rownames))
+
+# Integrate
+leuk_combined <- IntegrateData(anchorset = anchors_leuk, features.to.integrate = genes_leuk)
+DefaultAssay(leuk_combined) <- "integrated"
+
+# Dimensionality reduction + clustering
+leuk_combined <- ScaleData(leuk_combined)
+leuk_combined <- RunPCA(leuk_combined, npcs = 20)
+leuk_combined <- RunUMAP(leuk_combined, reduction = "pca", dims = 1:10)
+leuk_combined <- FindNeighbors(leuk_combined, dims = 1:10)
+leuk_combined <- FindClusters(leuk_combined, resolution = 0.5)
+
+# Save
+saveRDS(leuk_combined, file = "leukocytes_combined.rds")
+
+#Integration: Mesenchyme
+anchors_mes <- FindIntegrationAnchors(object.list = mesenchyme_objects, dims = 1:10)
+genes_mes <- Reduce(intersect, lapply(mesenchyme_objects, rownames))
+
+mes_combined <- IntegrateData(anchorset = anchors_mes, features.to.integrate = genes_mes)
+DefaultAssay(mes_combined) <- "integrated"
+
+mes_combined <- ScaleData(mes_combined)
+mes_combined <- RunPCA(mes_combined, npcs = 20)
+mes_combined <- RunUMAP(mes_combined, reduction = "pca", dims = 1:10)
+mes_combined <- FindNeighbors(mes_combined, dims = 1:10)
+mes_combined <- FindClusters(mes_combined, resolution = 0.5)
+
+saveRDS(mes_combined, file = "mesenchyme_combined.rds")
+
+```
+Qaulity control and normalisation checks
+```{r, echo = false}
+leuk_combined$short_id <- recode(leuk_combined$orig.ident,
+  "2018_control_leukocytes" = "18_cont_leuk",
+  "2018_T24_repairing_leukocytes" = "24_leuk",
+  "2020_T48_repairing_leukocytes" = "48_leuk",
+  "2020_control_leukocytes" = "20_cont_leuk")
+
+mes_combined$short_id <- recode(mes_combined$orig.ident,
+  "2018_control_mesenchyme" = "18_cont_mes",
+  "2018_T24_repairing_mesenchyme" = "24_mes",
+  "2020_T48_repairing_mesenchyme" = "48_mes",
+  "2020_control_mesenchyme" = "20_cont_mes")
+
+VlnPlot(leuk_combined, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
+VlnPlot(leuk_combined, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
+#VlnPlot(leukocytes_combined, features = "percent.mt", group.by = "short_id", pt.size = 0)
+VlnPlot(leuk_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
+# Check if cells with high mito% have low features (potential low-quality)
+#FeatureScatter(leukocytes_combined, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
+
+#checking dimensionality reduction
+print(leuk_combined[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(leuk_combined, dims = 1:2, reduction = "pca")
+DimPlot(leuk_combined, reduction = "pca") + NoLegend()
+DimHeatmap(leuk_combined, dims = 1:5, cells = 500, balanced = TRUE)
+ElbowPlot(leuk_combined)  + ggtitle("Immune cell subset")
+#Elbow plot shows most SD between 1 and 10
+
+VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
+VlnPlot(mes_combined, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
+#VlnPlot(mes_combined, features = "percent.mt", group.by = "short_id", pt.size = 0)
+VlnPlot(mes_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
+# Check if cells with high mito% have low features (potential low-quality)
+#FeatureScatter(mes_combined, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
+
+#checking dimensionality reduction
+print(mes_combined[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(mes_combined, dims = 1:2, reduction = "pca")
+DimPlot(mes_combined, reduction = "pca") + NoLegend()
+DimHeatmap(mes_combined, dims = 1:5, cells = 500, balanced = TRUE)
+ElbowPlot(mes_combined)  + ggtitle("Mesenchyme subset")
+#Elbow plot shows most SD between 1 and 10
+
+```
+
+
+Check dimensionality reduction and view UMAP
+
+```{r, echo=false}
+DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of all Leukocytes")
+DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of all Stromal cells")
+
+```
+Running a UMAP for all samples
+```{r, echo=false}
+
+# Define sample groupings by cell type
+all_samples <- c(
+  "2018_control_leukocytes", "2020_control_leukocytes",
+  "2018_T24_repairing_leukocytes", "2020_T48_repairing_leukocytes",
+  "2018_control_mesenchyme", "2020_control_mesenchyme",
+  "2018_T24_repairing_mesenchyme", "2020_T48_repairing_mesenchyme"
+)
+
+
+# Generalized loader function
+load_samples <- function(sample_names) {
+  lapply(sample_names, function(name) {
+    seu <- readRDS(paste0("processed_", name, ".rds"))
+    seu$sample <- name
+    return(seu)
+  })
+}
+
+# Load each group
+all_objects <- load_samples(all_samples)
+
+#QC Filtering Function
+qc_filter <- function(seu_list) {
+  lapply(seu_list, function(seu) {
+    subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1)
+  })
+}
+
+#Apply QC Filter
+all_objects <- qc_filter(all_objects)
+
+#Integration: All
+# Find anchors and common genes
+anchors_all <- FindIntegrationAnchors(object.list = all_objects, dims = 1:20)
+genes_all <- Reduce(intersect, lapply(all_objects, rownames))
+
+# Integrate
+all_combined <- IntegrateData(anchorset = anchors_all, features.to.integrate = genes_all)
+DefaultAssay(all_combined) <- "integrated"
+
+# Dimensionality reduction + clustering
+all_combined <- ScaleData(all_combined)
+all_combined <- RunPCA(all_combined, npcs = 20)
+all_combined <- RunUMAP(all_combined, reduction = "pca", dims = 1:20)
+all_combined <- FindNeighbors(all_combined, dims = 1:20)
+all_combined <- FindClusters(all_combined, resolution = 0.5)
+
+DimPlot(all_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of all samples")
+FeaturePlot(all_combined, reduction = "umap", features = "Mrc1", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0)
+
+```
+
+
+```{r, echo=false}
+#cluster labelling from Phoebe's script
+
+#FeaturePlot(leuk_combined, reduction = "umap", features = cDC2, ncol=4, pt.size = 0.5, order=TRUE, min.cutoff = 0)
+leuk_combined$group <- factor(x=leuk_combined$timepoint, levels = c("control", "24hrs", "48hrs"))
+FeatureScatter(leuk_combined, feature1 = "nFeature_RNA", feature2 = "Arg1")
+
+#use gene expression to identify clusters
+neutrophils <- c("S100a8","S100a9", "Cxcr2", "Lcn2", "Elane", "Mmp8")
+macrophages <- c("Csf1r", "Fcgr1", "Adgre1", "Zeb2", "Ccr2", "Ly6c2", "H2-Ab1", "Cd68", "Cd14", "Lyz2", "Arg1", "Cd93", "Vegfa")
+NK <- c("Nkg7", "Prf1", "Gzma", "Gzmb")
+DC <- c("Xcr1", "Clec9a", "Batf3", "Cadm1", "Cd209a", "Itgam", "Sirpa")
+Tc <- c("Cd3e", "Cd3d", "Cd3g", "Cd4", "Cd8a", "Trac")
+Bc <- c("Cd79a", "Cd79b", "Ms4a1", "Pax5")
+tregs <- c("Foxp3", "Il2ra", "Ctla4")
+
+
+FeaturePlot(leuk_combined, reduction = "umap", features = "Cd3e", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3e - T Cell")
+#FeaturePlot(leuk_combined, reduction = "Cd3d", features = "Batf3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3d - T Cell")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Clec9a", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Clec9a - DC")
+FeaturePlot(leuk_combined, reduction = "umap", features = "Trac", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Trac - T Cells")
+#features = "S100a8", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Neutrophils")
+FeaturePlot(leuk_combined, reduction = "umap", features = "Cd3d", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3d - T Cells")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Xcr1", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Dendritic Cells")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Nkg7", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("NK Cells")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Foxp3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("T Regulator Cells")
+
+
+#VlnPlot(object = leuk_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
+
+DotPlot(leuk_combined, assay = "RNA", features = Tc, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text((size=10))) + ggtitle("B Cell subtype markers")
+```
+
+
+```{r, echo=false}
+#cluster labelling from Phoebe's script
+
+DimPlot(mes_combined, pt.size = 0.5, label.size = 5, label=TRUE, split.by = "timepoint")
+mes_combined$timepoint <- factor(mes_combined$timepoint, levels = c("cycling", "24hrs", "48hrs"))
+
+
+DimPlot(mes_combined, pt.size = 0.5, label.size = 5, label=TRUE)
+#VlnPlot(mes_combined, features= c("Pdgfrb", "Pdgfra", "Mcam", "Cspg4", "Hif1a"),  assay="RNA", ncol=5, pt.size=0)
+#FeatureScatter(mes_combined, feature1 = "Pdgfrb", feature2 = "Krt18", group.by = "timepoint")
+
+#use gene expression to identify clusters
+fibroblasts <- c("Vim", "Des", "Thy1", "Pdgfrb", "Col1a1", "Kcnj8", "Pdgfra", "Mfap4", "Mfap5", "Krt8", "Krt19", "Sdc4")
+pericyte <- c("Mcam", "Cspg4", "Rgs4", "Rgs5", "Angpt2", "Ngf", "Acta2")
+endothelial <- c("Pecam1", "Vwf", "Cdh5", "Cldn5")
+epithelial <- c("Cdh1", "Epcam", "Muc1", "Muc4", "Krt7", "Alcam", "Fxyd3", "Fxyd4", "Cd9")
+F4_specific <- c("Mmp12", "Krt18", "Mt1", "Mt2", "Il23a", "Cyp26b1", "Tnfrsf11b", "Cemip", "Grem2", "Grem1", "Hmga2", "Edn1", "Tnfrsf23",
+                 "Fam84a","Nrg1", "Tnf", "Steap4", "Coch", "Clu",
+                 "Pdpn", "Sprr1a", "Smox", "Gsr")
+
+
+FeaturePlot(mes_combined, reduction = "umap", features = "Col1a1", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Col1a1 - Fibroblasts")
+FeaturePlot(mes_combined, reduction = "umap", features = "Pdgfra", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Pdgfra - Fibroblasts")
+FeaturePlot(mes_combined, reduction = "umap", features = "Mfap4", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Mfap4 - Fibroblasts")
+FeaturePlot(mes_combined, reduction = "umap", features = "Vim", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Vim - Fibroblasts")
+
+#VlnPlot(object = mes_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
+
+DotPlot(mes_combined, assay = "RNA", features = fibroblasts, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text(size=10)) + ggtitle("Fibroblasts subtype markers")
+```
+```{r, echo - false}
+#Rename clusters
+new_cluster_ids <- c(
+  "0" = "Neut",
+  "1" = "Mac",
+  "2" = "Neut",
+  "3" = "Neut",
+  "4" = "NK",
+  "5" = "Neut",
+  "6" = "Mac",
+  "7" = "Neut",
+  "8" = "NK",
+  "9" = "DC",
+  "10" = "DC",
+  "11" = "NK",
+  "12" = "Mac",
+  "13" = "DC",
+  "14" = "Bc",
+  "17" = "Bc"
+)
+
+#Apply new identities
+leuk_combined <- RenameIdents(leuk_combined, new_cluster_ids)
+
+#Remove clusters 15 and 16
+leuk_combined <- subset(leuk_combined, idents = c("15", "16"), invert = TRUE)
+leuk_combined$cell_type <- Idents(leuk_combined)
+
+DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Immune Cells")
+
+```
+
+```{r, echo=false}
+#Rename clusters
+new_cluster_ids <- c(
+  "0" = "Fibroblast",
+  "1" = "Fibroblast",
+  "2" = "Pericyte",
+  "3" = "Fibroblast",
+  "4" = "Fibroblast",
+  "5" = "Pericyte",
+  "6" = "Fibroblast",
+  "7" = "Fibroblast",
+  "8" = "Fibroblast",
+  "9" = "Epithelial",
+  "10" = "Unknown",
+  "11" = "Epithelial"
+)
+
+levels(Idents(mes_combined))
+mes_combined <- RenameIdents(mes_combined, new_cluster_ids)
+mes_combined$cell_type <- Idents(mes_combined)
+
+
+DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Stromal Cells")
+
+```
+```{r, echo=false}
+
+
+# --- Combine "control" into "cycling" for mesenchymal dataset ---
+mes_combined$timepoint[mes_combined$timepoint == "control"] <- "cycling"
+mes_combined$timepoint <- factor(mes_combined$timepoint, levels = c("cycling", "24hrs", "48hrs"))
+
+
+# ==== LEUKOCYTE DATASET ====
+
+# Total cell count per timepoint
+leuk_total_counts <- as.data.frame(table(Timepoint = leuk_combined$timepoint))
+print("Leukocyte Total Cell Counts per Timepoint:")
+print(leuk_total_counts)
+
+# Proportions by cell type and timepoint
+leuk_cell_counts <- table(Cell_Type = Idents(leuk_combined), Timepoint = leuk_combined$timepoint)
+leuk_cell_proportions <- prop.table(leuk_cell_counts, margin = 2)
+
+# Format for ggplot
+leuk_df <- as.data.frame(as.table(leuk_cell_proportions))
+colnames(leuk_df) <- c("Cell_Type", "Timepoint", "Proportion")
+
+# Pie chart
+ggplot(leuk_df, aes(x = "", y = Proportion, fill = Cell_Type)) + 
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar("y") + 
+  facet_wrap(~ Timepoint) + 
+  labs(title = "Leukocyte Cell Type Proportions by Timepoint") + 
+  theme_void()
+
+
+# ==== MESENCHYMAL DATASET ====
+
+# Total cell count per timepoint
+mes_total_counts <- as.data.frame(table(Timepoint = mes_combined$timepoint))
+print("Mesenchymal Total Cell Counts per Timepoint:")
+print(mes_total_counts)
+
+# Proportions by cell type and timepoint
+mes_cell_counts <- table(Cell_Type = Idents(mes_combined), Timepoint = mes_combined$timepoint)
+mes_cell_proportions <- prop.table(mes_cell_counts, margin = 2)
+
+# Format for ggplot
+mes_df <- as.data.frame(as.table(mes_cell_proportions))
+colnames(mes_df) <- c("Cell_Type", "Timepoint", "Proportion")
+mes_df[is.na(mes_df$Proportion), "Proportion"] <- 0
+
+# Pie chart
+ggplot(mes_df, aes(x = "", y = Proportion, fill = Cell_Type)) + 
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar("y") + 
+  facet_wrap(~ Timepoint) + 
+  labs(title = "Mesenchymal Cell Type Proportions by Timepoint") + 
+  theme_void()
+
+
+```
+

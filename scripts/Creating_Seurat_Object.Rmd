@@ -1,0 +1,231 @@
+---
+title: "pre-processing"
+author: "Beth Cragg"
+date: "2025-05-26"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+#Initial data analysis - BC Research Project
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the required libraries for analysis
+
+``` {r init, echo=FALSE}
+#setup required packages
+#BiocManager::install("Seurat")
+library(Seurat)
+library(cowplot)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(pheatmap)
+library(UpSetR)
+theme_set(theme_cowplot())
+
+ls()
+dir()
+```
+
+Creating Seurat objects for each sample
+
+```{r}
+# Directory names for all filtered data
+data_dirs <- c(
+  "~/Research_Project/data/filtered/2018_control_leukocytes", 
+  "~/Research_Project/data/filtered/2018_control_mesenchyme",
+  "~/Research_Project/data/filtered/2018_T24_repairing_leukocytes", 
+  "~/Research_Project/data/filtered/2018_T24_repairing_mesenchyme",
+  "~/Research_Project/data/filtered/2020_control_leukocytes", 
+  "~/Research_Project/data/filtered/2020_control_mesenchyme",
+  "~/Research_Project/data/filtered/2020_T48_repairing_leukocytes", 
+  "~/Research_Project/data/filtered/2020_T48_repairing_mesenchyme"
+)
+
+# Named list to store Seurat objects
+seurat_objects <- list()
+
+# Loop through each directory and create Seurat objects
+for (dir in data_dirs) {
+  # Extract a short label from the folder name
+  label <- basename(dir)
+  
+  # Read using ReadMtx rather than 10x
+  data <- ReadMtx(
+    mtx = file.path(dir, "matrix.mtx.gz"),
+    features = file.path(dir, "features.tsv.gz"),
+    cells = file.path(dir, "barcodes.tsv.gz"),
+    feature.column = 2
+  )
+  
+  # Create Seurat object
+  seurat_obj <- CreateSeuratObject(counts = data, min.cells = 3, min.features = 200, project = label)
+  parts <- strsplit(label, "_")[[1]]
+  seurat_obj$year <- parts[1]
+  seurat_obj$timepoint <- parts[2]
+  seurat_obj$celltype <- parts[3]
+  
+  # Calculate percent.mt and percent.ribo
+  big_obj[["percent.mt"]] <- PercentageFeatureSet(big_obj, pattern = "^mt-")
+  big_obj[["percent.ribo"]] <- PercentageFeatureSet(big_obj, pattern = "^Rpl|^Rps")
+  
+  #filtering seurat objects before integration
+  seurat_obj <- subset(x=seurat_obj, subset= nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1)
+  
+  # Store in list
+  seurat_objects[[label]] <- seurat_obj
+  
+  
+
+}
+
+
+```
+
+Merge controls and creating a single Seurat Object
+
+
+```{r, echo=false}
+
+# Merge controls by cell type across years
+controls_leukocytes <- merge(
+  seurat_objects[["2018_control_leukocytes"]],
+  y = seurat_objects[["2020_control_leukocytes"]],
+  add.cell.ids = c("2018_leuko", "2020_leuko"),
+  project = "controls_leukocytes"
+)
+controls_mesenchyme <- merge(
+  seurat_objects[["2018_control_mesenchyme"]],
+  y = seurat_objects[["2020_control_mesenchyme"]],
+  add.cell.ids = c("2018_mesen", "2020_mesen"),
+  project = "controls_mesenchyme"
+)
+
+# Store merged controls in list, drop originals
+seurat_objects[["controls_leukocytes"]] <- controls_leukocytes
+seurat_objects[["controls_mesenchyme"]] <- controls_mesenchyme
+
+seurat_objects[["2018_control_leukocytes"]]   <- NULL
+seurat_objects[["2020_control_leukocytes"]]   <- NULL
+seurat_objects[["2018_control_mesenchyme"]]   <- NULL
+seurat_objects[["2020_control_mesenchyme"]]   <- NULL
+
+# Combine all 6 Seurat objects into a big object
+big_obj <- merge(x = seurat_objects[["controls_leukocytes"]],
+  y = list(
+    seurat_objects[["controls_mesenchyme"]],
+    seurat_objects[["2018_T24_repairing_leukocytes"]], 
+    seurat_objects[["2018_T24_repairing_mesenchyme"]],
+    seurat_objects[["2020_T48_repairing_leukocytes"]], 
+    seurat_objects[["2020_T48_repairing_mesenchyme"]]
+  ),
+  add.cell.ids = c("cont_leuk", "cont_mes", "24_leuk", "24_mes", "48_leuk", "48_mes"),
+  project = "all_expmnts")
+
+big_obj$short_id <- recode(big_obj$orig.ident,
+  "2018_control_leukocytes" = "18_cont_leuk",
+  "2018_control_mesenchyme" = "18_cont_mes",
+  "2018_T24_repairing_leukocytes" = "24_leuk",
+  "2018_T24_repairing_mesenchyme" = "24_mes",
+  "2020_T48_repairing_leukocytes" = "48_leuk",
+  "2020_T48_repairing_mesenchyme" = "48_mes",
+  "2020_control_leukocytes" = "20_cont_leuk",
+  "2020_control_mesenchyme" = "20_cont_mes")
+
+```
+
+QC checks of filtered data
+
+```{r, echo=false}
+
+
+VlnPlot(big_obj, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
+
+VlnPlot(big_obj, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
+
+VlnPlot(big_obj, features = "percent.mt", group.by = "short_id", pt.size = 0)
+
+VlnPlot(big_obj, features = "percent.ribo", group.by = "short_id", pt.size = 0)
+
+# Visualize relationship between number of genes and total counts
+FeatureScatter(big_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by="short_id")
+
+# Check if cells with high mito% have low features (potential low-quality)
+FeatureScatter(big_obj, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
+
+# Optional: ribosomal content vs features
+FeatureScatter(big_obj, feature1 = "percent.ribo", feature2 = "nFeature_RNA", group.by="short_id")
+
+
+```
+```{r}
+qc_summary <- data.frame(
+  total_cells = ncol(big_obj),
+  cells_low_features = sum(big_obj$nFeature_RNA < 200),
+  cells_high_features = sum(big_obj$nFeature_RNA > 5000),
+  cells_high_mito = sum(big_obj$percent.mt >= 10),
+  cells_high_ribo = sum(big_obj$percent.ribo >= 10)
+)
+qc_summary
+```
+
+Normalisation or variation and sequencing depth
+- barcodes reduce PCR bias
+
+```{r, echo=false}
+#logNormalize or SCTransform?
+big_obj <- NormalizeData(big_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find most variable features
+big_obj <- FindVariableFeatures(big_obj, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(big_obj), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(big_obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+```
+
+Scaling and dimensionality reduction
+
+```{r, echo=false}
+#scaling
+big_obj <- ScaleData(big_obj)
+
+#dimensionality reduction
+big_obj <- RunPCA(big_obj, npcs = 20)
+print(big_obj[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(big_obj, dims = 1:2, reduction = "pca")
+DimPlot(big_obj, reduction = "pca") + NoLegend()
+DimHeatmap(big_obj, dims = 1:5, cells = 500, balanced = TRUE)
+ElbowPlot(big_obj)
+
+```
+
+UMAPs and clustering
+```{r, echo=false}
+
+big_obj <- FindNeighbors(big_obj, dims = 1:8)
+big_obj <- FindClusters(big_obj, resolution = 0.5)
+
+
+```
+
+
+```{r, echo=false}
+big_obj <- RunUMAP(big_obj, dims=1:8)
+DimPlot(big_obj, reduction = "umap", label = TRUE)
+```
+
+
+```{r, echo=false}
+
+```
+
