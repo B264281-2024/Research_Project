@@ -1,0 +1,599 @@
+---
+title: "CellChat_BC_Project"
+author: "Beth Cragg"
+date: "2025-06-23"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+#CellChat Analysis - BC Research Project v2.0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(CellChat)
+library(Seurat)
+library(cowplot)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+library(CellChat)
+#source("Utils.R")
+library(tidyverse)
+library(NMF)
+library(circlize)
+library(ComplexHeatmap)
+```
+
+# Run preprocessing for each timepoint separately
+```{r, echo=false}
+
+#Read in final data files
+control_seurat <- readRDS(file = "2025_MSc_control.rds")
+h24_seurat <- readRDS(file = "2025_MSc_24.rds")
+h48_seurat <- readRDS(file = "2025_MSc_48.rds")
+
+#  - - - - - CONTROL - - - - - - 
+# Extract normalized data & metadata
+data.input.control <- GetAssayData(control_seurat, assay = "RNA", layer= "data")  # log-normalized counts
+meta.control <- data.frame(labels = control_seurat$cell_type_broad, row.names = colnames(control_seurat))
+rownames(meta.control) <- colnames(data.input.control)
+
+cellchat.control <- createCellChat(object = data.input.control, meta = meta.control, group.by = "labels")
+cellchat.control <- addMeta(cellchat.control, meta = meta.control)
+cellchat.control <- setIdent(cellchat.control, ident.use = "labels")
+
+# Assign CellChatDB (human or mouse depending on your data)
+cellchat.control@DB <- CellChatDB.mouse
+
+# Preprocess
+cellchat.control <- subsetData(cellchat.control)
+cellchat.control <- identifyOverExpressedGenes(cellchat.control, do.fast = FALSE)
+cellchat.control <- identifyOverExpressedInteractions(cellchat.control)
+cellchat.control <- computeCommunProb(cellchat.control)
+cellchat.control <- filterCommunication(cellchat.control, min.cells=10)
+cellchat.control <- computeCommunProbPathway(cellchat.control)
+cellchat.control <- aggregateNet(cellchat.control)
+cellchat.control <- netAnalysis_computeCentrality(cellchat.control)
+
+
+
+#  - - - - - 24 HRS - - - - - - 
+# Extract normalized data & metadata
+data.input.h24 <- GetAssayData(h24_seurat, assay = "RNA", layer= "data")  # log-normalized counts
+meta.h24 <- data.frame(labels = h24_seurat$cell_type_broad)
+rownames(meta.h24) <- colnames(data.input.h24)
+
+cellchat.h24 <- createCellChat(object = data.input.h24, meta = meta.h24, group.by = "labels")
+cellchat.h24 <- addMeta(cellchat.h24, meta = meta.h24)
+cellchat.h24 <- setIdent(cellchat.h24, ident.use = "labels")
+
+# Assign CellChatDB (human or mouse depending on your data)
+cellchat.h24@DB <- CellChatDB.mouse
+
+# Preprocess
+cellchat.h24 <- subsetData(cellchat.h24)
+cellchat.h24 <- identifyOverExpressedGenes(cellchat.h24, do.fast = FALSE)
+cellchat.h24 <- identifyOverExpressedInteractions(cellchat.h24)
+cellchat.h24 <- computeCommunProb(cellchat.h24)
+cellchat.h24 <- filterCommunication(cellchat.h24, min.cells=10)
+cellchat.h24 <- computeCommunProbPathway(cellchat.h24)
+cellchat.h24 <- aggregateNet(cellchat.h24)
+cellchat.h24 <- netAnalysis_computeCentrality(cellchat.h24)
+
+
+
+#  - - - - - 48 HRS - - - - - - 
+# Extract normalized data & metadata
+data.input.h48 <- GetAssayData(h48_seurat, assay = "RNA", layer= "data")  # log-normalized counts
+meta.h48 <- data.frame(labels = h48_seurat$cell_type_broad)
+rownames(meta.h48) <- colnames(data.input.h48)
+
+cellchat.h48 <- createCellChat(object = data.input.h48, meta = meta.h48, group.by = "labels")
+cellchat.h48 <- addMeta(cellchat.h48, meta = meta.h48)
+cellchat.h48 <- setIdent(cellchat.h48, ident.use = "labels")
+
+# Assign CellChatDB (human or mouse depending on your data)
+cellchat.h48@DB <- CellChatDB.mouse
+
+# Preprocess
+cellchat.h48 <- subsetData(cellchat.h48)
+cellchat.h48 <- identifyOverExpressedGenes(cellchat.h48, do.fast = FALSE)
+cellchat.h48 <- identifyOverExpressedInteractions(cellchat.h48)
+cellchat.h48 <- computeCommunProb(cellchat.h48)
+cellchat.h48 <- filterCommunication(cellchat.h48, min.cells=10)
+cellchat.h48 <- computeCommunProbPathway(cellchat.h48)
+cellchat.h48 <- aggregateNet(cellchat.h48)
+cellchat.h48 <- netAnalysis_computeCentrality(cellchat.h48)
+
+object.list <- list(
+  Cycling = cellchat.control,
+  H24 = cellchat.h24,
+  H48 = cellchat.h48
+)
+
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+```
+
+
+## Compare the total number of interactions and interaction strength
+To answer on question on whether the cell-cell communication is enhanced or not, CellChat compares the the total number of interactions and interaction strength of the inferred cell-cell communication networks from different biological conditions.
+
+##Also generate scatter plots to map senders/receivers for each timepoint
+```{r, echo=false}
+#analyse immune and stromal separately
+immune <- subsetCellChat(cellchat, group.by = "labels", idents.use = c("Neut","Mono/Macs","NK","DC","Tc","Bc"))
+stromal <- subsetCellChat(cellchat, group.by = "labels", idents.use = c("Fibroblasts", "MET"))
+
+# Compare interactions in immune cells
+gg_immune1 <- compareInteractions(immune, show.legend = FALSE, group = c(1:3), title="Number of interactions (immune cells only)")
+gg_immune2 <- compareInteractions(immune, show.legend = FALSE, group = c(1:3), measure = "weight", title="Interaction strength (immune cells only)")
+
+# Compare interactions in all cells
+gg1 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1:3), title="Number of interactions")
+gg2 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1:3), measure = "weight", title="Interaction strength")
+gg1+gg2
+
+# Compare interactions in stromal cells
+gg_stromal1 <- compareInteractions(stromal, show.legend = FALSE, group = c(1:3), title="Number of interactions (stromal cells only)")
+gg_stromal2 <- compareInteractions(stromal, show.legend = FALSE, group = c(1:3), measure = "weight", , title="Interaction strength (stromal cells only)")
+
+# Plot side by side
+gg_immune1+gg_immune2
+gg_stromal1+gg_stromal2
+
+#Scatter plots
+scatter.control <- netAnalysis_signalingRole_scatter(cellchat.control, title="Signalling Roles by Cell Type - Cycling")
+scatter.24 <- netAnalysis_signalingRole_scatter(cellchat.h24, title="Signalling Roles by Cell Type - 24hr")
+scatter.48 <- netAnalysis_signalingRole_scatter(cellchat.h48, title="Signalling Roles by Cell Type - 48hr")
+
+get_plot_data <- function(p) ggplot_build(p)$data[[1]]
+all_data <- do.call(rbind, lapply(list(scatter.control, scatter.24, scatter.48), get_plot_data))
+xr <- range(all_data$x)
+yr <- range(all_data$y)
+
+scatter.control + coord_cartesian(xlim=xr, ylim=yr)
+scatter.24      + coord_cartesian(xlim=xr, ylim=yr)
+scatter.48      + coord_cartesian(xlim=xr, ylim=yr)
+
+```
+
+
+#Compare interaction strength by cell type
+#red = increases over time
+#blue = decreases over time
+```{r, echo=false}
+netVisual_diffInteraction(cellchat, comparison = c(1, 2), weight.scale = T, measure = "weight", title.name = "Communication Changes: Cycling vs 24hr")
+title(main = "Communication Changes: Cycling vs 24hr", cex.main = 1.2)
+netVisual_diffInteraction(cellchat, comparison = c(1, 3), weight.scale = T, measure = "weight")
+netVisual_diffInteraction(cellchat, comparison = c(2, 3), weight.scale = T, measure = "weight")
+```
+
+
+
+#Circle plots for mapping interactions links
+#Heatmaps for analysing interaction strength between cell types at the different timepoints
+
+```{r, echo=false}
+
+# Cycling timepoint
+weight_mat <- cellchat.control@net$weight
+weight_mat[weight_mat <= 0.5] <- 0  #filter high confidence interactions only
+
+# Now plot only high-confidence edges
+netVisual_circle(
+  weight_mat,
+  vertex.weight = as.numeric(table(cellchat.control@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE
+)
+title(main = "Cycling (Interaction Strength >0.5)", cex.main = 1.2)
+
+
+# 24h timepoint
+weight_mat <- cellchat.h24@net$weight
+weight_mat[weight_mat <= 0.5] <- 0  #filter high confidence interactions only
+
+# Now plot only high-confidence edges
+netVisual_circle(
+  weight_mat,
+  vertex.weight = as.numeric(table(cellchat.h24@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE
+)
+title(main = "24hr (Interaction Strength >0.5)", cex.main = 1.2)
+
+# 48h timepoint
+weight_mat <- cellchat.h48@net$weight
+weight_mat[weight_mat <= 0.5] <- 0  #filter high confidence interactions only
+
+# Now plot only high-confidence edges
+netVisual_circle(
+  weight_mat,
+  vertex.weight = as.numeric(table(cellchat.h48@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE
+)
+title(main = "48hr (Interaction Strength >0.5)", cex.main = 1.2)
+
+#Heatmaps
+netVisual_heatmap(cellchat.control, title.name = "Number of interactions - Cycling")
+netVisual_heatmap(cellchat.h24, title.name = "Number of interactions - 24hr")
+netVisual_heatmap(cellchat.h48, title.name = "Number of interactions - 48hr")
+
+```
+
+#What are the top pathways by timepoint?
+
+```{r}
+top_cycling <- head(cellchat.control@netP$pathways, 20)
+top_24 <- head(cellchat.h24@netP$pathways, 20)
+top_48 <- head(cellchat.h48@netP$pathways, 20)
+all_pathways <- unique(c(top_cycling, top_24, top_48))
+pathway_counts <- table(c(top_cycling, top_24, top_48))
+top_20_merged <- names(sort(pathway_counts, decreasing = TRUE)[1:20])
+
+# OUTGOING ROLE across all timepoints using same top pathways
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.control,
+    pattern = "outgoing",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "Cycling (Top 20 merged pathways)"
+  )
+)
+
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.h24,
+    pattern = "outgoing",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "24h (Top 20 merged pathways)"
+  )
+)
+
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.h48,
+    pattern = "outgoing",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "48h (Top 20 merged pathways)"
+  )
+)
+
+# ✅ INCOMING ROLE across all timepoints
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.control,
+    pattern = "incoming",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "Cycling (Top 20 merged pathways)"
+  )
+)
+
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.h24,
+    pattern = "incoming",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "24h (Top 20 merged pathways)"
+  )
+)
+
+print(
+  netAnalysis_signalingRole_heatmap(
+    cellchat.h48,
+    pattern = "incoming",
+    signaling = top_20_merged,
+    width = 6, height = 6,
+    title = "48h (Top 20 merged pathways)"
+  )
+)
+
+```
+
+#Identify clusters of pathways based off of functional similarity
+
+```{r, echo=false}
+library(reticulate)
+reticulate::py_install("umap-learn", envname = NULL, pip = TRUE)
+py_module_available("umap")
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "functional")
+cellchat <- netEmbedding(cellchat, type = "functional")
+cellchat <- netClustering(cellchat, type = "functional")
+
+# Visualize in 2D embedding
+netVisual_embeddingPairwise(cellchat, type = "functional", label.size = 3.5)
+netVisual_embeddingPairwiseZoomIn(cellchat, type = "functional", nCol = 2)
+rankSimilarity(cellchat, type = "functional")
+
+# Extract cluster assignment
+cluster_assignments <- cellchat@netP$similarity$functional$group
+
+# Create dataframe of cluster allocation
+cluster_assignments_vec <- unlist(cluster_assignments)
+df_clusters <- data.frame(
+  pathway_timepoint = names(cluster_assignments_vec),
+  cluster = cluster_assignments_vec
+)
+
+# Split into timepoint + pathway
+df_clusters <- df_clusters %>%
+  separate(pathway_timepoint, into = c("pathway","timepoint"), sep = "--", extra = "merge")
+
+# Remove the fixed "1-2-3." prefix from pathway names
+df_clusters <- df_clusters %>%
+  mutate(pathway = gsub("^1-2-3\\.", "", pathway))
+
+df_clusters <- df_clusters %>%
+  mutate(cluster = as.character(cluster)) %>%
+  mutate(cluster = recode(cluster,
+    "3" = "1",
+    "1" = "2",
+    "4" = "3",
+    "2" = "4"
+  ))
+
+# Then convert to factor with new levels in desired order (1 to 4)
+df_clusters$cluster <- factor(df_clusters$cluster, levels = c("1", "2", "3", "4"))
+
+# If you have cluster <-> color mapping (from your scatter plots):
+cluster_colors <- c("1" = "#FBB4AE", "2" = "#B3DE69", "3" = "#80B1D3", "4" = "#DDA0DD")
+
+# Count num of pathways per cluster per timepoint
+counts <- df_clusters %>%
+  group_by(cluster, timepoint) %>%
+  summarise(num_pathways = n(), .groups = "drop")
+
+# 1. Count number of pathways per cluster
+pathways_per_cluster <- df_clusters %>%
+  group_by(cluster) %>%
+  summarise(n_pathways = n(), .groups = "drop")
+
+# 2. Count number of timepoints per cluster
+timepoints_per_cluster <- df_clusters %>%
+  group_by(cluster, timepoint) %>%
+  summarise(n_timepoints = n_distinct(timepoint), .groups = "drop")
+
+# 3. List of pathways per timepoint per cluster
+pathways_per_timepoint_cluster <- df_clusters %>%
+  group_by(cluster, timepoint) %>%
+  summarise(pathways = paste(pathway, collapse = ", "), .groups = "drop")
+
+# Plot number of pathways per cluster
+ggplot(pathways_per_cluster, aes(x = factor(cluster), y = n_pathways, fill = factor(cluster))) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of Pathways per Cluster", x = "Cluster", y = "Number of Pathways") +
+  theme_minimal() +
+  scale_fill_manual(values = cluster_colors) 
+
+# Plot with cluster order/color reflecting CellChat results
+ggplot(counts, aes(x = cluster, y = num_pathways, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ timepoint) +
+  scale_fill_manual(values = cluster_colors) +
+  labs(
+    x = "Cluster",
+    y = "Number of Pathways",
+    title = "Number of Pathways per Cluster per Timepoint"
+  ) +
+  theme_minimal()
+
+# Step 1: Create the full pathway-timepoint name in df_clusters
+df_clusters <- df_clusters %>%
+  mutate(full_name = paste(pathway, timepoint, sep = "--"))
+
+comm_probabilities <- cellchat@netP$similarity$functional$matrix[[1]]
+
+# Calculate the average communication probability for each pathway (mean across the row)
+comm_probabilities_avg <- apply(comm_probabilities, 1, mean)
+
+# Create a data frame with the pathway names and corresponding communication probabilities
+df_comm_prob <- data.frame(
+  pathway = rownames(comm_probabilities),
+  comm_probability = comm_probabilities_avg
+)
+
+# Split into timepoint + pathway
+df_comm_prob <- df_comm_prob %>%
+  separate(pathway, into = c("pathway","timepoint"), sep = "--", extra = "merge")
+
+# Remove the fixed "1-2-3." prefix from pathway names
+df_clusters <- df_clusters %>%
+  mutate(pathway = gsub("^1-2-3\\.", "", pathway))
+
+df_comm_prob <- data.frame(
+  pathway_timepoint = rownames(df_comm_prob),
+  df_comm_prob,  # Add the rest of the columns
+  stringsAsFactors = FALSE
+)
+
+df_clusters <- df_clusters %>%
+  left_join(df_comm_prob, by = c("full_name" = "pathway_timepoint"))
+
+df_clusters <- df_clusters %>%
+  select(-pathway.y, -timepoint.y)
+
+#write.csv(df_clusters, file="df_functional_clusters_26.7.2025.csv")
+
+df_clusters_sorted <- df_clusters %>%
+  arrange(cluster, desc(comm_probability))  # Sort pathways by communication probability (descending)
+
+# Step 2: Select top 3 pathways per cluster
+top_3_pathways <- df_clusters_sorted %>%
+  group_by(cluster) %>%
+  slice_head(n = 3)  # Select top 3 rows per cluster
+
+# Step 3: Check the top 3 pathways per cluster
+print(top_3_pathways)
+
+```
+
+#View top 10 pathways by communication probability for each cluster
+
+```{r}
+# Sort and get top 10 pathways by communication probability within each cluster
+top_10_cluster_pathways <- df_clusters %>%
+  group_by(cluster) %>%
+  arrange(cluster, desc(comm_probability)) %>%
+  slice_head(n = 10)  # Get the top 10 pathways per cluster
+
+# View the top 10 pathways per cluster
+print(top_10_cluster_pathways)
+max_comm_prob <- max(top_10_cluster_pathways$comm_probability)
+
+# Sort and get top 10 pathways by communication probability within each timepoint
+top_10_timepoint_pathways <- df_clusters %>%
+  group_by(timepoint.x) %>%
+  arrange(timepoint.x, desc(comm_probability)) %>%
+  slice_head(n = 10)  # Get the top 10 pathways per timepoint
+
+# View the top 10 pathways per timepoint
+print(top_10_timepoint_pathways)
+
+
+# Loop through each cluster and plot separately
+for(cluster_id in unique(top_10_cluster_pathways$cluster)) {
+  
+  # Filter data for the current cluster
+  cluster_data <- top_10_cluster_pathways %>%
+    filter(cluster == cluster_id)
+  
+  # Create the plot for the current cluster
+  p <- ggplot(cluster_data, aes(x = reorder(pathway.x, comm_probability), y = comm_probability, fill = factor(cluster))) +
+    geom_bar(stat = "identity") +
+    labs(title = paste("Top 10 Pathways - Cluster", cluster_id),
+         x = "Pathway", y = "Communication Probability") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_fill_manual(values = c("1" = "#66c2a5", "2" = "#fc8d62", "3" = "#8da0cb", "4" = "#e78ac3")) +
+    ylim(0, max_comm_prob)  + theme(legend.position="none")
+  print(p)
+}
+
+# Loop through each cluster and plot separately
+for(timepoint_id in unique(top_10_timepoint_pathways$timepoint.x)) {
+  
+  # Filter data for the current cluster
+  timepoint_data <- top_10_timepoint_pathways %>%
+    filter(timepoint.x == timepoint_id)
+  
+  # Create the plot for the current cluster
+  # Plot top 10 pathways by communication probability for each timepoint (individual plots)
+  p <- ggplot(timepoint_data, aes(x = reorder(pathway.x, comm_probability), y = comm_probability, fill = factor(timepoint.x))) +
+    geom_bar(stat = "identity") +
+    labs(title = "Top 10 Pathways by Communication Probability per Timepoint", x = "Pathway", y = "Communication Probability") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_fill_manual(values = c("Cycling" = "#66c2a5", "H24" = "#fc8d62", "H48" = "#8da0cb"))+
+    ylim(0, max_comm_prob)
+  print(p)
+}
+
+# Correlation between communication probability and other factors (e.g., cluster)
+cor_analysis <- df_clusters %>%
+  group_by(cluster) %>%
+  summarise(correlation = cor(comm_probability, as.numeric(factor(cluster))))
+
+print(cor_analysis)
+
+# Boxplot showing distribution of communication probabilities by cluster
+ggplot(df_clusters, aes(x = factor(cluster), y = comm_probability, fill = factor(cluster))) +
+  geom_boxplot() +
+  labs(title = "Distribution of Communication Probabilities by Cluster", x = "Cluster", y = "Communication Probability") +
+  theme_minimal() +
+  scale_fill_manual(values = c("1" = "#66c2a5", "2" = "#fc8d62", "3" = "#8da0cb", "4" = "#e78ac3"))
+
+
+```
+
+
+#Identify clusters of pathways based off of structural similarity
+```{r, echo=false}
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "structural")
+cellchat <- netEmbedding(cellchat, type = "structural")
+cellchat <- netClustering(cellchat, type = "structural")
+# Visualization in 2D-space
+netVisual_embeddingPairwise(cellchat, type = "structural", label.size = 3.5)
+netVisual_embeddingPairwiseZoomIn(cellchat, type = "structural", nCol = 2)
+
+```
+
+#Compare the overall information flow of each signaling pathway
+
+```{r, echo=false, fig.width=10, fig.height=10}
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)
+gg1
+gg2
+
+netVisual_clustering(cellchat, type = "functional", cluster.id = 1) # for Cluster 1
+netVisual_clustering(cellchat, type = "functional", cluster.id = 2) # for Cluster 2
+netVisual_clustering(cellchat, type = "functional", cluster.id = 3) # for Cluster 3
+netVisual_clustering(cellchat, type = "functional", cluster.id = 4) # for Cluster 4
+```
+#Compare outgoing (or incoming) signaling associated with each cell population
+
+```{r, fig.align = "center"}
+i = 1
+# combining all the identified signaling pathways from different datasets 
+pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
+
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "all", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6, color.heatmap = "OrRd")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6, color.heatmap = "OrRd")
+ht1
+ht2
+```
+
+```{r, fig.width=12,fig.height = 6, fig.wide = TRUE, fig.align = "center"}
+# Chord diagram
+pathways.show <- c("MPZ") 
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(object.list[[i]], signaling = pathways.show, layout = "chord", signaling.name = paste(pathways.show, names(object.list)[i]))
+}
+```
+```{r}
+pathways.show <- c("MPZ", "NCAM")
+weight.max <- sapply(pathways.show, function(pathway) {
+  getMaxWeight(object.list, slot.name = "netP", attribute = pathway)
+})
+
+# Loop through each dataset (timepoint) and each pathway
+for (i in 1:length(object.list)) {  # Loop over datasets
+  for (j in 1:length(pathways.show)) {  # Loop over pathways
+    # Generate pathway visualization for each dataset and pathway
+    netVisual_aggregate(
+      object.list[[i]], 
+      signaling = pathways.show[j], 
+      layout = "circle",  # You can also try "chord" for different layouts
+      edge.weight.max = weight.max[j],  # Use the correct weight max for each pathway
+      edge.width.max = 10,  # Max width of the edges
+      signaling.name = paste(pathways.show[j], names(object.list)[i], sep = "_")
+      title = "Cycling (Top 20 merged pathways)"
+    )
+  }
+}
+```
+
+
+
+We can plot the gene expression distribution of signaling genes related to L-R pairs or signaling pathway using a Seurat wrapper function `plotGeneExpression`.  
+```{r, echo=false}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("Cycling", "H24", "H48")) # set factor level
+plotGeneExpression(cellchat, signaling = "THY1", split.by = "datasets", colors.ggplot = T)
+```
+
+```{r}
+saveRDS(cellchat, file = "cellchat_timepoint_comparison_2025.rds")
+```
+
+
+

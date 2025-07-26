@@ -27,14 +27,14 @@ Load and process data
 
 ```{r, echo=false}
 data_dirs <- c(
-  "~/Research_Project/data/filtered/2018_control_leukocytes", 
-  "~/Research_Project/data/filtered/2018_control_mesenchyme",
-  "~/Research_Project/data/filtered/2018_T24_repairing_leukocytes", 
-  "~/Research_Project/data/filtered/2018_T24_repairing_mesenchyme",
-  "~/Research_Project/data/filtered/2020_control_leukocytes", 
-  "~/Research_Project/data/filtered/2020_control_mesenchyme",
-  "~/Research_Project/data/filtered/2020_T48_repairing_leukocytes", 
-  "~/Research_Project/data/filtered/2020_T48_repairing_mesenchyme"
+  "/home/scratch1/msc_2025/s2760053/filtered/2018_control_leukocytes", 
+  "/home/scratch1/msc_2025/s2760053/filtered/2018_control_mesenchyme",
+  "/home/scratch1/msc_2025/s2760053/filtered/2018_T24_repairing_leukocytes", 
+  "/home/scratch1/msc_2025/s2760053/filtered/2018_T24_repairing_mesenchyme",
+  "/home/scratch1/msc_2025/s2760053/filtered/2020_control_leukocytes", 
+  "/home/scratch1/msc_2025/s2760053/filtered/2020_control_mesenchyme",
+  "/home/scratch1/msc_2025/s2760053/filtered/2020_T48_repairing_leukocytes", 
+  "/home/scratch1/msc_2025/s2760053/filtered/2020_T48_repairing_mesenchyme"
 )
 
 sample_names <- basename(data_dirs)
@@ -109,7 +109,8 @@ for (i in seq_along(data_dirs)) {
 }
 
 ```
-Integration
+Integrate Immune and Stromal cell data
+
 ```{r, echo=false}
 ## 🔗 Integration and Clustering by cell type
 
@@ -173,7 +174,7 @@ leuk_combined <- FindNeighbors(leuk_combined, dims = 1:10)
 leuk_combined <- FindClusters(leuk_combined, resolution = 0.5)
 
 # Save
-saveRDS(leuk_combined, file = "leukocytes_combined.rds")
+#saveRDS(leuk_combined, file = "leukocytes_combined.rds")
 
 #Integration: Mesenchyme
 anchors_mes <- FindIntegrationAnchors(object.list = mesenchyme_objects, dims = 1:10)
@@ -188,10 +189,11 @@ mes_combined <- RunUMAP(mes_combined, reduction = "pca", dims = 1:10)
 mes_combined <- FindNeighbors(mes_combined, dims = 1:10)
 mes_combined <- FindClusters(mes_combined, resolution = 0.5)
 
-saveRDS(mes_combined, file = "mesenchyme_combined.rds")
+#saveRDS(mes_combined, file = "mesenchyme_combined.rds")
 
 ```
 Qaulity control and normalisation checks
+
 ```{r, echo = false}
 leuk_combined$short_id <- recode(leuk_combined$orig.ident,
   "2018_control_leukocytes" = "18_cont_leuk",
@@ -205,9 +207,10 @@ mes_combined$short_id <- recode(mes_combined$orig.ident,
   "2020_T48_repairing_mesenchyme" = "48_mes",
   "2020_control_mesenchyme" = "20_cont_mes")
 
-VlnPlot(leuk_combined, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
-VlnPlot(leuk_combined, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
-#VlnPlot(leukocytes_combined, features = "percent.mt", group.by = "short_id", pt.size = 0)
+VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0)
+VlnPlot(mes_combined, features = "nCount_RNA", group.by = "seurat_clusters", pt.size = 0)
+VlnPlot(mes_combined, features = "percent.mito", group.by = "seurat_clusters", pt.size = 0)
+VlnPlot(mes_combined, features = "percent.ribo", group.by = "seurat_clusters", pt.size = 0)
 VlnPlot(leuk_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
 # Check if cells with high mito% have low features (potential low-quality)
 #FeatureScatter(leukocytes_combined, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
@@ -235,6 +238,9 @@ DimHeatmap(mes_combined, dims = 1:5, cells = 500, balanced = TRUE)
 ElbowPlot(mes_combined)  + ggtitle("Mesenchyme subset")
 #Elbow plot shows most SD between 1 and 10
 
+#mes_combined <- RunTSNE(mes_combined, dims = 1:15)
+#DimPlot(mes_combined, reduction = "tsne")
+
 ```
 
 
@@ -246,6 +252,7 @@ DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by 
 
 ```
 Running a UMAP for all samples
+
 ```{r, echo=false}
 
 # Define sample groupings by cell type
@@ -300,7 +307,7 @@ FeaturePlot(all_combined, reduction = "umap", features = "Mrc1", ncol=1, pt.size
 
 ```
 
-
+Immune Cell Cluster Identification
 ```{r, echo=false}
 #cluster labelling from Phoebe's script
 
@@ -309,32 +316,42 @@ leuk_combined$group <- factor(x=leuk_combined$timepoint, levels = c("control", "
 FeatureScatter(leuk_combined, feature1 = "nFeature_RNA", feature2 = "Arg1")
 
 #use gene expression to identify clusters
-neutrophils <- c("S100a8","S100a9", "Cxcr2", "Lcn2", "Elane", "Mmp8")
-macrophages <- c("Csf1r", "Fcgr1", "Adgre1", "Zeb2", "Ccr2", "Ly6c2", "H2-Ab1", "Cd68", "Cd14", "Lyz2", "Arg1", "Cd93", "Vegfa")
-NK <- c("Nkg7", "Prf1", "Gzma", "Gzmb")
-DC <- c("Xcr1", "Clec9a", "Batf3", "Cadm1", "Cd209a", "Itgam", "Sirpa")
-Tc <- c("Cd3e", "Cd3d", "Cd3g", "Cd4", "Cd8a", "Trac")
-Bc <- c("Cd79a", "Cd79b", "Ms4a1", "Pax5")
-tregs <- c("Foxp3", "Il2ra", "Ctla4")
+neutrophils <- c("S100a8","S100a9", "Cxcr2" ) #"Lcn2", "Elane", "Mmp8"
+macrophages <- c("Itgam", "Zeb2", "Cd68", "Csf1r", "Fcgr1", "Adgre1")
+mono <- c("Ly6c2", "Ccr2", "Cd14", "Cx3cr1")
+NK <- c("Nkg7", "Gzma", "Gzmb")
+DC <- c("Clec9a", "Clec10a", "Cd209a")
+Tc <- c("Cd3e", "Cd3d", "Cd3g")
+Bc <- c("Cd79a", "Cd79b", "Btla")
+#tregs <- c("Foxp3", "Il2ra", "Ctla4")
+Eo <- c("Siglecf")
 
 
-FeaturePlot(leuk_combined, reduction = "umap", features = "Cd3e", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3e - T Cell")
-#FeaturePlot(leuk_combined, reduction = "Cd3d", features = "Batf3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3d - T Cell")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Clec9a", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Clec9a - DC")
-FeaturePlot(leuk_combined, reduction = "umap", features = "Trac", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Trac - T Cells")
-#features = "S100a8", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Neutrophils")
-FeaturePlot(leuk_combined, reduction = "umap", features = "Cd3d", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3d - T Cells")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Xcr1", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Dendritic Cells")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Nkg7", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("NK Cells")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Foxp3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("T Regulator Cells")
+# STEP 1: Identify markers for all clusters
+all_markers <- FindAllMarkers(leuk_combined,
+                               only.pos = TRUE,
+                               min.pct = 0.25,
+                               logfc.threshold = 0.25)
 
+# STEP 2: Filter to get top 20 markers per cluster
+top_markers <- all_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 20, order_by = avg_log2FC)
+
+# STEP 3: Save to CSV for offline review
+write.csv(top_markers, "top20_markers_per_cluster.csv", row.names = FALSE)
+
+
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Siglecf", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Siglecf - Eosinophils")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Ccr3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Ccr3 - Eosinophils")
+#FeaturePlot(leuk_combined, reduction = "umap", features = "Il5ra", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Il5ra - Eosinophils")
 
 #VlnPlot(object = leuk_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
 
-DotPlot(leuk_combined, assay = "RNA", features = Tc, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
-  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text((size=10))) + ggtitle("B Cell subtype markers")
+DotPlot(leuk_combined, assay = "RNA", features = Eo, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text((size=10))) + ggtitle("Gene markers for Eosinophils")
 ```
-
+Stromal Cell Cluster Identification
 
 ```{r, echo=false}
 #cluster labelling from Phoebe's script
@@ -348,41 +365,87 @@ DimPlot(mes_combined, pt.size = 0.5, label.size = 5, label=TRUE)
 #FeatureScatter(mes_combined, feature1 = "Pdgfrb", feature2 = "Krt18", group.by = "timepoint")
 
 #use gene expression to identify clusters
-fibroblasts <- c("Vim", "Des", "Thy1", "Pdgfrb", "Col1a1", "Kcnj8", "Pdgfra", "Mfap4", "Mfap5", "Krt8", "Krt19", "Sdc4")
-pericyte <- c("Mcam", "Cspg4", "Rgs4", "Rgs5", "Angpt2", "Ngf", "Acta2")
+fibroblasts <- c("Cd34", "Pdgfra", "Mfap4", "Mfap5", "Fbln1", "Fbln2", "Spon2", "Col1a1", "Col3a1")
+#"Vim", "Des", "Thy1", "Pdgfrb", "Kcnj8", "Krt8", "Krt19", "Sdc4")
+perivascular <- c("Mcam", "Acta2", "Cspg4")
+vSMCs <- c("Myh11", "Tagln", "Cnn1", "Kitl", "Pln", "Lmod1")
+P1 <- c("Kcnj8", "Abcc9", "Ednrb", "Rgs5", "Vtn", "Postn") # No Myob1
+P2 <- c("Arhgdib", "Serpine1", "Cxcl1")
 endothelial <- c("Pecam1", "Vwf", "Cdh5", "Cldn5")
-epithelial <- c("Cdh1", "Epcam", "Muc1", "Muc4", "Krt7", "Alcam", "Fxyd3", "Fxyd4", "Cd9")
-F4_specific <- c("Mmp12", "Krt18", "Mt1", "Mt2", "Il23a", "Cyp26b1", "Tnfrsf11b", "Cemip", "Grem2", "Grem1", "Hmga2", "Edn1", "Tnfrsf23",
-                 "Fam84a","Nrg1", "Tnf", "Steap4", "Coch", "Clu",
-                 "Pdpn", "Sprr1a", "Smox", "Gsr")
+epithelial <- c("Cdh1", "Epcam", "Alcam", "Cd24a", "Clu", "Cldn4", "Fxyd3", "Fxyd4", "Krt5", "Krt7", "Krt8", "Krt14", "Krt15", "Krt18", "Krt19", "Muc1", "Muc4", "Wfdc2")
+F1 <- c("Aspg", "Dpep1", "Ngfr", "Angptl7", "Ifit1", "Ifit3")
+F2 <- c("Cxcl14", "Cdh11", "Rgs2", "Smoc2", "Bmp7", "Wt1")
+F3 <- c("Clec3b", "Fap", "Cd55", "Vit", "Col14a1", "Cxcl16")
+F4 <- c("Epcam", "Alcam", "Cd24a", "Clu", "Krt18", "Sdc4", "Ndrg1")
+F5 <- c("Casp3", "Casp9", "Trp53", "Bax", "Col7a1", "Scube1") #mitochondrial genes and cell death - dead/apoptotic cells which should be excluded
 
+for (i in F4) {
+  message("Processing: ", i)
+  title <- paste(i,"- Transition")
+  fp <- FeaturePlot(mes_combined, reduction = "umap", features = i, ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle(title)
+  print(fp)
+}
 
-FeaturePlot(mes_combined, reduction = "umap", features = "Col1a1", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Col1a1 - Fibroblasts")
-FeaturePlot(mes_combined, reduction = "umap", features = "Pdgfra", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Pdgfra - Fibroblasts")
-FeaturePlot(mes_combined, reduction = "umap", features = "Mfap4", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Mfap4 - Fibroblasts")
-FeaturePlot(mes_combined, reduction = "umap", features = "Vim", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Vim - Fibroblasts")
+# STEP 1: Identify markers for all clusters
+#all_markers <- FindAllMarkers(mes_combined,
+ #                              only.pos = TRUE,
+  #                             min.pct = 0.25,
+   #                            logfc.threshold = 0.25)
+
+# STEP 2: Filter to get top 20 markers per cluster
+#top_markers <- all_markers %>%
+ # group_by(cluster) %>%
+  #slice_max(n = 20, order_by = avg_log2FC)
+
+# STEP 3: Save to CSV for offline review
+#write.csv(top_markers, "top20_markers_per_cluster_mes.csv", row.names = FALSE)
+
 
 #VlnPlot(object = mes_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
 
-DotPlot(mes_combined, assay = "RNA", features = fibroblasts, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
-  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text(size=10)) + ggtitle("Fibroblasts subtype markers")
+DotPlot(mes_combined, assay = "RNA", features = F5, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text(size=10)) + ggtitle("Gene Markers for F5")
+
+for (tp in unique(mes_combined$timepoint)) {
+  subset_obj <- subset(mes_combined, subset = timepoint == tp)
+  p <- DimPlot(subset_obj, reduction = "umap", label = TRUE, pt.size = 0.5) +
+    ggtitle(paste("UMAP of Stromal Cells at Timepoint:", tp))
+  print(p)
+}
+
+FeaturePlot(mes_combined, features = c("Cd34", "Mfap5", "Pdgfra"))  # Canonical fibroblasts
+VlnPlot(mes_combined, pt.size=0, features = c("Cd34"))  # Canonical fibroblasts
+VlnPlot(mes_combined, pt.size=0, features = c("Mfap5"))
+VlnPlot(mes_combined, pt.size=0, features = c("Pdgfra"))
+mes.markers <- FindAllMarkers(mes_combined, only.pos = TRUE)
+mes.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+mes.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 5) %>%
+    ungroup() -> top5
+DoHeatmap(mes_combined, features = top5$gene) + NoLegend()
 ```
+UMAP of Identified Immune Cells
+
 ```{r, echo - false}
 #Rename clusters
 new_cluster_ids <- c(
   "0" = "Neut",
-  "1" = "Mac",
+  "1" = "Mono/Macs",
   "2" = "Neut",
   "3" = "Neut",
   "4" = "NK",
   "5" = "Neut",
-  "6" = "Mac",
+  "6" = "Mono/Macs",
   "7" = "Neut",
   "8" = "NK",
-  "9" = "DC",
+  "9" = "Mono/Macs",
   "10" = "DC",
-  "11" = "NK",
-  "12" = "Mac",
+  "11" = "Tc",
+  "12" = "Mono/Macs",
   "13" = "DC",
   "14" = "Bc",
   "17" = "Bc"
@@ -394,42 +457,97 @@ leuk_combined <- RenameIdents(leuk_combined, new_cluster_ids)
 #Remove clusters 15 and 16
 leuk_combined <- subset(leuk_combined, idents = c("15", "16"), invert = TRUE)
 leuk_combined$cell_type <- Idents(leuk_combined)
+leuk_combined$cell_type_broad <- Idents(leuk_combined)
 
 DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Immune Cells")
-
+for (tp in unique(leuk_combined$timepoint)) {
+  subset_obj <- subset(leuk_combined, subset = timepoint == tp)
+  p <- DimPlot(subset_obj, reduction = "umap", label = TRUE, pt.size = 0.5) +
+    ggtitle(paste("UMAP of Immune Cells at Timepoint:", tp))
+  print(p)
+}
 ```
+UMAP of identified stromal cells
 
 ```{r, echo=false}
+# View current cluster IDs
+Idents(mes_combined) <- "seurat_clusters"
+print(levels(Idents(mes_combined)))
+
 #Rename clusters
 new_cluster_ids <- c(
-  "0" = "Fibroblast",
-  "1" = "Fibroblast",
-  "2" = "Pericyte",
-  "3" = "Fibroblast",
-  "4" = "Fibroblast",
-  "5" = "Pericyte",
-  "6" = "Fibroblast",
-  "7" = "Fibroblast",
-  "8" = "Fibroblast",
-  "9" = "Epithelial",
-  "10" = "Unknown",
-  "11" = "Epithelial"
+  "0" = "F2",
+  "1" = "F2",
+  "2" = "Peri",
+  "3" = "F1",
+  "4" = "F1",
+  "5" = "vSMCs",
+  "6" = "F1",
+  "7" = "F2",
+  "8" = "F3",
+  "9" = "MET",
+  "11" = "Epi"
 )
 
-levels(Idents(mes_combined))
+mes_combined <- subset(mes_combined, idents = c("10"), invert = TRUE)
+
+# Rename the clusters
+Idents(mes_combined) <- "seurat_clusters"
 mes_combined <- RenameIdents(mes_combined, new_cluster_ids)
 mes_combined$cell_type <- Idents(mes_combined)
+table(mes_combined$cell_type, mes_combined$timepoint)
 
 
-DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Stromal Cells")
+# Define new cluster names
+broad_cluster_ids <- c(
+  "F2" = "Fibroblasts",
+  "F2" = "Fibroblasts",
+  "Peri" = "Pericytes",
+  "F1" = "Fibroblasts",
+  "F1" = "Fibroblasts",
+  "vSMCs" = "vSMCs",
+  "F1" = "Fibroblasts",
+  "F2" = "Fibroblasts",
+  "F3" = "Fibroblasts",
+  "MET" = "MET",
+  "Epi" = "Epithelial"
+)
+
+# Rename cluster identities
+mes_combined <- RenameIdents(mes_combined, broad_cluster_ids)
+
+# Save these new identities into metadata column
+mes_combined$cell_type_broad <- Idents(mes_combined)
+
+# Set broad cell types as the active identity
+Idents(mes_combined) <- "cell_type_broad"
+
+
+DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type_broad") + ggtitle("UMAP of identified Stromal Cells (Broad)")
+DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Stromal Cells (Specific)")
+
+for (tp in unique(mes_combined$timepoint)) {
+  subset_obj <- subset(mes_combined, subset = timepoint == tp)
+  p <- DimPlot(subset_obj, reduction = "umap", group.by="cell_type_broad", label = TRUE, pt.size = 0.5) +
+    ggtitle(paste("UMAP of Stromal Cells at Timepoint:", tp))
+  print(p)
+}
 
 ```
+
+
+Visualisation of cell types across timepoints
 ```{r, echo=false}
 
 
-# --- Combine "control" into "cycling" for mesenchymal dataset ---
+# ==== DATA PREPARATION ====
+
+# Standardize and order timepoints for mesenchymal dataset
 mes_combined$timepoint[mes_combined$timepoint == "control"] <- "cycling"
 mes_combined$timepoint <- factor(mes_combined$timepoint, levels = c("cycling", "24hrs", "48hrs"))
+
+# Standardize and order timepoints for leukocyte dataset
+leuk_combined$timepoint <- factor(leuk_combined$timepoint, levels = c("cycling", "24hrs", "48hrs"))
 
 
 # ==== LEUKOCYTE DATASET ====
@@ -442,10 +560,15 @@ print(leuk_total_counts)
 # Proportions by cell type and timepoint
 leuk_cell_counts <- table(Cell_Type = Idents(leuk_combined), Timepoint = leuk_combined$timepoint)
 leuk_cell_proportions <- prop.table(leuk_cell_counts, margin = 2)
+df <- table(leuk_combined$cell_type, leuk_combined$short_id)
+rowMeans(df[, c("18_cont_leuk", "20_cont_leuk")])
+
+
 
 # Format for ggplot
 leuk_df <- as.data.frame(as.table(leuk_cell_proportions))
 colnames(leuk_df) <- c("Cell_Type", "Timepoint", "Proportion")
+leuk_df[is.na(leuk_df$Proportion), "Proportion"] <- 0
 
 # Pie chart
 ggplot(leuk_df, aes(x = "", y = Proportion, fill = Cell_Type)) + 
@@ -457,6 +580,7 @@ ggplot(leuk_df, aes(x = "", y = Proportion, fill = Cell_Type)) +
 
 
 # ==== MESENCHYMAL DATASET ====
+Idents(mes_combined) <- "cell_type_broad"
 
 # Total cell count per timepoint
 mes_total_counts <- as.data.frame(table(Timepoint = mes_combined$timepoint))
@@ -466,20 +590,50 @@ print(mes_total_counts)
 # Proportions by cell type and timepoint
 mes_cell_counts <- table(Cell_Type = Idents(mes_combined), Timepoint = mes_combined$timepoint)
 mes_cell_proportions <- prop.table(mes_cell_counts, margin = 2)
+df <- table(mes_combined$cell_type, mes_combined$short_id)
+rowMeans(df[, c("18_cont_mes", "20_cont_mes")])
 
 # Format for ggplot
 mes_df <- as.data.frame(as.table(mes_cell_proportions))
 colnames(mes_df) <- c("Cell_Type", "Timepoint", "Proportion")
 mes_df[is.na(mes_df$Proportion), "Proportion"] <- 0
+counts_df <- as.data.frame(as.table(mes_cell_counts))
+colnames(counts_df) <- c("Cell_Type", "Timepoint", "Count")
+counts_df
 
 # Pie chart
 ggplot(mes_df, aes(x = "", y = Proportion, fill = Cell_Type)) + 
   geom_bar(stat = "identity", width = 1) + 
   coord_polar("y") + 
   facet_wrap(~ Timepoint) + 
-  labs(title = "Mesenchymal Cell Type Proportions by Timepoint") + 
   theme_void()
 
 
+
 ```
+Merge objects into one
+
+```{r}
+merged_seurat <- merge(mes_combined, y=leuk_combined, add.cell.ids = c("mes", "leuk"), merge.data = TRUE)
+LayerData(merged_seurat)[1:10,1:15]
+merged_seurat[["RNA"]] <-JoinLayers(merged_seurat[["RNA"]])
+
+Idents(merged_seurat) <- "Cell_Type"  # or whatever metadata column holds cell types
+subset_cells <- subset(
+  merged_seurat, 
+  idents = c("Fibroblasts", "MET", "Neut", "Mono/Macs", "Tc", "NK", "Bc", "DC")
+)
+
+Idents(subset_cells) <- "timepoint"  # e.g. "Control", "24h", "48h"
+
+control_seurat <- subset(subset_cells, idents = "Control")
+h24_seurat     <- subset(subset_cells, idents = "24h")
+h48_seurat     <- subset(subset_cells, idents = "48h")
+
+saveRDS(control_seurat, file="2025_MSc_control.rds")
+saveRDS(h24_seurat, file="2025_MSc_24.rds")
+saveRDS(h48_seurat, file="2025_MSc_48.rds")
+```
+
+
 

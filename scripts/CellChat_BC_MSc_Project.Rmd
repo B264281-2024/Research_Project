@@ -1,0 +1,643 @@
+---
+title: "CellChat_BC_Project"
+author: "Beth Cragg"
+date: "2025-06-23"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+#CellChat Analysis - BC Research Project
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(CellChat)
+library(Seurat)
+library(cowplot)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(CellChat)
+#source("Utils.R")
+library(tidyverse)
+library(NMF)
+library(circlize)
+library(ComplexHeatmap)
+
+#Read in final data file 
+data <- readRDS(file = "2025_MSc_merged_seurat.rds")
+#cellchat <- readRDS(file = "cellchat_30_06_25.rds")
+table(data$timepoint)
+
+#view mouse database
+CellChatDB <- CellChatDB.mouse
+unique(CellChatDB$interaction$pathway_name)
+
+```
+
+Installed CellChat using
+  devtools::install_github("jokergoo/ComplexHeatmap")
+  devtools::install_github("jinworks/CellChat")
+
+Use this code to create cellchat objects for each timepoint individually and then merge them back together
+```{r, echo=false}
+# Split merged Seurat object
+seurat_list <- SplitObject(data, split.by = "timepoint")
+
+cellchat_list <- list()
+
+for (tp in names(seurat_list)) {
+  data.input <- GetAssayData(seurat_list[[tp]], assay = "RNA", layer = "data")
+  meta <- data.frame(labels = seurat_list[[tp]]$cell_type_broad, row.names = colnames(seurat_list[[tp]]))
+
+  cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+  cellchat <- addMeta(cellchat, meta = meta)
+  cellchat <- setIdent(cellchat, ident.use = "labels")
+
+  # Set database
+  cellchat@DB <- CellChatDB.mouse
+
+  # Preprocessing
+  cellchat <- subsetData(cellchat)
+  cellchat <- identifyOverExpressedGenes(cellchat, do.fast = FALSE)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  cellchat <- computeCommunProb(cellchat)
+  cellchat <- filterCommunication(cellchat, min.cells = 10)
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  cellchat <- netAnalysis_computeCentrality(cellchat)  # Added centrality computation
+
+  cellchat_list[[tp]] <- cellchat
+}
+
+
+names(cellchat_list) <- names(seurat_list)  # e.g., "cycling", "24hrs", "48hrs"
+names(cellchat_list)
+cellchat <- mergeCellChat(cellchat_list, add.names = names(cellchat_list))
+saveRDS(cellchat, file="cellchat_30_06_25.rds")
+
+```
+
+#Generate bubble plots and heatmaps for each timepoint
+
+```{r echo=false}
+#Define clusters
+fibroblast_clusters <- c("Fibroblasts", "MET")
+immune_clusters <- c("Neut", "Mono/Macs", "Tc", "NK", "Bc", "DC")
+
+#Re-compare interactions between subsetted clusters
+fibro_immune_list <- list()
+
+for (tp in names(cellchat_list)) {
+  fibro_immune <- subsetCellChat(
+    cellchat_list[[tp]],
+    group.by = "labels",
+    idents.use = c(fibroblast_clusters, immune_clusters)
+  )
+
+  fibro_immune <- aggregateNet(fibro_immune)
+  fibro_immune <- netAnalysis_computeCentrality(fibro_immune)
+  fibro_immune_list[[tp]] <- fibro_immune
+}
+
+# Cycling timepoint
+netVisual_circle(
+  fibro_immune_list[["cycling"]]@net$weight,
+  vertex.weight = as.numeric(table(fibro_immune_list[["cycling"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE,
+)
+title(main = paste("Cycling"), cex.main = 1.2)
+
+# 24h timepoint
+netVisual_circle(
+  fibro_immune_list[["24hrs"]]@net$weight,
+  vertex.weight = as.numeric(table(fibro_immune_list[["24hrs"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE,
+)
+title(main = paste("24hr"), cex.main = 1.2)
+
+# 48h timepoint
+netVisual_circle(
+  fibro_immune_list[["48hrs"]]@net$weight,
+  vertex.weight = as.numeric(table(fibro_immune_list[["48hrs"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = FALSE,
+)
+title(main = paste("48hr"), cex.main = 1.2)
+
+#Heatmaps
+netVisual_heatmap(fibro_immune_list[["cycling"]], title.name = "Number of interactions - Cycling")
+netVisual_heatmap(fibro_immune_list[["24hrs"]], title.name = "Number of interactions - 24hr")
+netVisual_heatmap(fibro_immune_list[["48hrs"]], title.name = "Number of interactions - 48hr")
+```
+
+#Number of interactions/Interaction strength plots
+#All and separated by stromal/immune
+```{r echo=false}
+#analyse immune and stromal separately
+immune <- subsetCellChat(cellchat, group.by = "labels", idents.use = c("Neut","Mono/Macs","NK","DC","Tc","Bc"))
+stromal <- subsetCellChat(cellchat, group.by = "labels", idents.use = c("Fibroblasts", "MET"))
+
+# Compare interactions in immune cells
+gg_immune1 <- compareInteractions(immune, show.legend = FALSE, group = c(1:3), title="Number of interactions (immune cells only)")
+gg_immune2 <- compareInteractions(immune, show.legend = FALSE, group = c(1:3), measure = "weight", title="Interaction strength (immune cells only)")
+
+# Compare interactions in all cells
+gg1 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1:3), title="Number of interactions")
+gg2 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1:3), measure = "weight", title="Interaction strength")
+gg1+gg2
+
+# Compare interactions in stromal cells
+gg_stromal1 <- compareInteractions(stromal, show.legend = FALSE, group = c(1:3), title="Number of interactions (stromal cells only)")
+gg_stromal2 <- compareInteractions(stromal, show.legend = FALSE, group = c(1:3), measure = "weight", , title="Interaction strength (stromal cells only)")
+
+# Plot side by side
+gg_immune1+gg_immune2
+gg_stromal1+gg_stromal2
+
+```
+
+
+##Bubble and Dot Plots for Specific Pathways
+
+```{r bubble-dot-plots}
+netVisual_circle(fibro_immune_list[["cycling"]]@net$weight, 
+                 vertex.weight = rowSums(fibro_immune_list[["cycling"]]@net$weight),
+                 weight.scale = TRUE, 
+                 title.name = "Cycling - Interaction weights")
+
+netVisual_diffInteraction(
+  fibro_immune_list,
+  comparison = c("cycling", "24hrs"),   # use the NAMES
+  measure = c("weight"),
+  weight.scale = TRUE
+)
+
+
+# Plot side-by-side
+par(mfrow = c(1, 2), xpd = TRUE)
+
+netVisual_diffInteraction(
+  fibro_immune_list,
+  comparison = c("cycling", "24hrs"),
+  measure = c("weight"),
+  weight.scale = TRUE
+)
+
+
+# 2) Show network weights for a single timepoint ("cycling")
+netVisual_diffInteraction(
+  fibro_immune_list[["cycling"]],       # extract ONE CellChat object
+  weight.scale = TRUE, 
+  measure = "weight"
+)
+
+
+
+for (tp in names(cellchat_list)) {
+  netVisual_bubble(cellchat_list[[tp]], sources.use = NULL, targets.use = NULL, signaling = NULL, remove.isolate = FALSE)
+}
+
+
+# Dot plot comparison of key signaling pathways
+pathways.show <- c("TGFb", "WNT", "CXCL") 
+netAnalysis_dot(cellchat_merged, signaling = pathways.show)
+```
+
+#I'm not sure if this works?
+
+```{r centrality-plots}
+# Use centrality scores to evaluate sender/receiver/hub roles
+for (tp in names(cellchat_list)) {
+  print(netAnalysis_signalingRole_network(cellchat_list[[tp]], signaling = NULL))
+}
+```
+
+## Top 20 pathways for each timepoint, by cell type
+
+```{r heatmap-top-pathways-per-celltype}
+ top_cycling <- head(fibro_immune_list[["cycling"]]@netP$pathways, 20)
+top_24 <- head(fibro_immune_list[["24hrs"]]@netP$pathways, 20)
+top_48 <- head(fibro_immune_list[["48hrs"]]@netP$pathways, 20)
+  
+# Now visualize fibroblast vs immune OUTGOING role
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "outgoing",
+    signaling = top_cycling,
+    width = 6, height = 6,
+    title = paste("Cycling")
+  )
+)
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "outgoing",
+    signaling = top_24,
+    width = 6, height = 6,
+    title = paste("24 hours")
+  )
+)
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "outgoing",
+    signaling = top_48,
+    width = 6, height = 6,
+    title = paste("48 hours")
+  )
+)
+  
+# ✅ And fibroblast vs immune INCOMING role
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "incoming",
+    signaling = top_cycling,
+    width = 6, height = 6,
+    title = paste("Cycling")
+  )
+)
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "incoming",
+    signaling = top_24,
+    width = 6, height = 6,
+    title = paste("24 hours")
+  )
+)
+print(
+  netAnalysis_signalingRole_heatmap(
+    fibro_immune,
+    pattern = "incoming",
+    signaling = top_48,
+    width = 6, height = 6,
+    title = paste("48 hours")
+  )
+)
+
+```
+
+#
+
+```{r}
+print(
+  netVisual_bubble(
+    fibro_immune,
+    sources.use = fibroblast_clusters,
+    targets.use = immune_clusters,
+    signaling = top_cycling,
+    remove.isolate = TRUE,
+    angle.x = 45,
+    title.name = paste(tp, "- Fibroblast → Immune Crosstalk")
+  )
+)
+```
+
+
+```{r top25-cellchat-circle-plots, fig.width = 5, fig.height = 5}
+
+library(dplyr)
+
+# --- Extract interaction strength matrices ---
+weight_cycling <- fibro_immune_list[["cycling"]]@net$weight
+weight_24      <- fibro_immune_list[["24hrs"]]@net$weight
+weight_48      <- fibro_immune_list[["48hrs"]]@net$weight
+
+# --- Convert to long format (source, target, weight) ---
+df_cycling <- as.data.frame(as.table(weight_cycling)) %>% rename(source = Var1, target = Var2, weight = Freq)
+df_24      <- as.data.frame(as.table(weight_24)) %>% rename(source = Var1, target = Var2, weight = Freq)
+df_48      <- as.data.frame(as.table(weight_48)) %>% rename(source = Var1, target = Var2, weight = Freq)
+
+# --- Function to filter top 25% ---
+filter_top25 <- function(df) {
+  q <- quantile(df$weight, 0.75, na.rm = TRUE)  # 75th percentile threshold
+  df %>% filter(weight >= q & weight > 0)
+}
+
+top_cycling <- filter_top25(df_cycling)
+top_24      <- filter_top25(df_24)
+top_48      <- filter_top25(df_48)
+
+# --- Function to rebuild a filtered matrix from top interactions ---
+build_filtered_matrix <- function(top_df, full_matrix) {
+  mat <- matrix(0, nrow = nrow(full_matrix), ncol = ncol(full_matrix))
+  rownames(mat) <- rownames(full_matrix)
+  colnames(mat) <- colnames(full_matrix)
+  for (i in seq_len(nrow(top_df))) {
+    mat[top_df$source[i], top_df$target[i]] <- top_df$weight[i]
+  }
+  return(mat)
+}
+
+filtered_cycling <- build_filtered_matrix(top_cycling, weight_cycling)
+filtered_24      <- build_filtered_matrix(top_24, weight_24)
+filtered_48      <- build_filtered_matrix(top_48, weight_48)
+
+# --- Plot filtered top 25% interactions ---
+netVisual_circle(
+  filtered_cycling,
+  vertex.weight = as.numeric(table(fibro_immune_list[["cycling"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = TRUE,
+  title.name = "Top 25% Fibroblast–Immune (Cycling)"
+)
+
+netVisual_circle(
+  filtered_24,
+  vertex.weight = as.numeric(table(fibro_immune_list[["24hrs"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = TRUE,
+  title.name = "Top 25% Fibroblast–Immune (24hrs)"
+)
+
+netVisual_circle(
+  filtered_48,
+  vertex.weight = as.numeric(table(fibro_immune_list[["48hrs"]]@idents)),
+  weight.scale = TRUE,
+  label.edge = TRUE,
+  title.name = "Top 25% Fibroblast–Immune (48hrs)"
+)
+
+```
+
+# Which cells are the different cell types mostly interacting with across all timepoints?
+```{r}
+# Top 25% of interactions
+for (i in celltype_levels) {
+  # Extract the full weight matrix
+  mat <- cellchat_merged@net$weight
+  
+  # Keep only rows where source is the current cell type
+  mat_filtered <- matrix(0, nrow = nrow(mat), ncol = ncol(mat),
+                         dimnames = dimnames(mat))
+  mat_filtered[i, ] <- mat[i, ]
+  
+  # Apply top 25% filter (optional: to only plot strongest interactions from this source)
+  threshold <- quantile(mat_filtered[mat_filtered > 0], probs = 0.75)
+  mat_filtered[mat_filtered < threshold] <- 0
+  
+  # Plot the circle
+  netVisual_circle(mat_filtered,
+                   vertex.weight = as.numeric(table(cellchat_merged@idents)),
+                   weight.scale = TRUE,
+                   label.edge = TRUE,
+                   margin=-0.2)
+  title(main = paste("Top 25% Communication -", i), cex.main = 1.2)
+}
+```
+
+# Which pathways is each cell type predominantely sending signals via?
+```{r}
+# Get cycling pathway data
+prob_cycling <- fibro_immune_list[["cycling"]]@netP$prob
+pathway_names <- fibro_immune_list[["cycling"]]@netP$pathways
+senders <- dimnames(prob_cycling)[[1]]  # all sender cell types
+
+get_top5_pathways <- function(prob_matrix, pathways, sender) {
+  # Sum across all receiver cells for each pathway
+  sender_strength <- sapply(seq_along(pathways), function(p) {
+    sum(prob_matrix[sender, , p], na.rm = TRUE)
+  })
+  
+  # Get top 5 pathways
+  top_idx <- order(sender_strength, decreasing = TRUE)[1:5]
+  
+  data.frame(
+    sender = sender,
+    pathway = pathways[top_idx],
+    strength = sender_strength[top_idx]
+  )
+}
+
+# Apply to all senders for cycling
+top5_cycling <- lapply(senders, function(s) {
+  get_top5_pathways(prob_cycling, pathway_names, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_cycling %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_cycling %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+
+# --- 24h ---
+prob_24 <- fibro_immune_list[["24hrs"]]@netP$prob
+pathway_names_24 <- fibro_immune_list[["24hrs"]]@netP$pathways
+senders_24 <- dimnames(prob_24)[[1]]
+
+top5_24 <- lapply(senders_24, function(s) {
+  get_top5_pathways(prob_24, pathway_names_24, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_24 %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_24 %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (24hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (24hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# --- 48h ---
+prob_48 <- fibro_immune_list[["48hrs"]]@netP$prob
+pathway_names_48 <- fibro_immune_list[["48hrs"]]@netP$pathways
+senders_48 <- dimnames(prob_48)[[1]]
+
+top5_48 <- lapply(senders_48, function(s) {
+  get_top5_pathways(prob_48, pathway_names_48, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_48 %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_48 %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (48hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (48hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+fibro_top_cycling <- top5_cycling %>% filter(sender == "Fibroblasts")
+
+ggplot(fibro_top_cycling, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Fibroblasts: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Signaling Strength") +
+  theme_minimal(base_size = 14)
+
+
+```
+# Which pathways is each cell type predominantely receiving signals via? Update this
+```{r}
+# Get cycling pathway data
+prob_cycling <- fibro_immune_list[["cycling"]]@netP$prob
+pathway_names <- fibro_immune_list[["cycling"]]@netP$pathways
+senders <- dimnames(prob_cycling)[[1]]  # all sender cell types
+
+get_top5_pathways <- function(prob_matrix, pathways, sender) {
+  # Sum across all receiver cells for each pathway
+  sender_strength <- sapply(seq_along(pathways), function(p) {
+    sum(prob_matrix[sender, , p], na.rm = TRUE)
+  })
+  
+  # Get top 5 pathways
+  top_idx <- order(sender_strength, decreasing = TRUE)[1:5]
+  
+  data.frame(
+    sender = sender,
+    pathway = pathways[top_idx],
+    strength = sender_strength[top_idx]
+  )
+}
+
+# Apply to all senders for cycling
+top5_cycling <- lapply(senders, function(s) {
+  get_top5_pathways(prob_cycling, pathway_names, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_cycling %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_cycling %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+
+# --- 24h ---
+prob_24 <- fibro_immune_list[["24hrs"]]@netP$prob
+pathway_names_24 <- fibro_immune_list[["24hrs"]]@netP$pathways
+senders_24 <- dimnames(prob_24)[[1]]
+
+top5_24 <- lapply(senders_24, function(s) {
+  get_top5_pathways(prob_24, pathway_names_24, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_24 %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_24 %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (24hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (24hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# --- 48h ---
+prob_48 <- fibro_immune_list[["48hrs"]]@netP$prob
+pathway_names_48 <- fibro_immune_list[["48hrs"]]@netP$pathways
+senders_48 <- dimnames(prob_48)[[1]]
+
+top5_48 <- lapply(senders_48, function(s) {
+  get_top5_pathways(prob_48, pathway_names_48, s)
+}) %>% bind_rows()
+
+fibro_only   <- top5_48 %>% filter(sender == "Fibroblasts")
+immune_only  <- top5_48 %>% filter(sender != "Fibroblasts")
+
+# Fibroblasts
+ggplot(fibro_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Fibroblast: Top 5 Pathways (48hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+# Immune cells separately
+ggplot(immune_only, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~sender, scales = "free_y") +
+  coord_flip() +
+  labs(title = "Immune Senders: Top 5 Pathways (48hrs)",
+       x = "Pathway", y = "Total signaling strength") +
+  theme_minimal(base_size = 14)
+
+fibro_top_cycling <- top5_cycling %>% filter(sender == "Fibroblasts")
+
+ggplot(fibro_top_cycling, aes(x = reorder(pathway, strength), y = strength, fill = pathway)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Fibroblasts: Top 5 Pathways (Cycling)",
+       x = "Pathway", y = "Signaling Strength") +
+  theme_minimal(base_size = 14)
+
+
+```
+## 9. Identify Conserved and Timepoint-Specific Communication Patterns
+
+```{r net-analysis-conserved-specific}
+cellchat_merged <- identifyCommunicationPatterns(cellchat_merged, pattern = "incoming")
+netAnalysis_contribution(cellchat_merged)
+```
+```{r}
+netVisual_bubble(
+  fibro_immune_list[["cycling"]],
+  sources.use = "Fibroblasts",
+  targets.use = c("Neut", "Mono/Macs", "Tc", "NK", "Bc", "DC"),
+  remove.isolate = TRUE
+)
+```
