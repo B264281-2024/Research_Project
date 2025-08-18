@@ -6,7 +6,7 @@ output:
   word_document: default
   html_document: default
   pdf_document: default
-#Initial data analysis - BC Research Project
+# Initial scRNA seq data processing - BC Research Project
 ---
 
 ```{r setup, include=FALSE}
@@ -40,7 +40,7 @@ data_dirs <- c(
 sample_names <- basename(data_dirs)
 seurat_objects <- list()
 
-#loop through each dataset
+# Loop through each dataset individually
 for (i in seq_along(data_dirs)) {
   message("Processing: ", sample_names[i])
   
@@ -57,15 +57,15 @@ for (i in seq_along(data_dirs)) {
   percent.mito <- Matrix::colSums(data[mt.genes, , drop = FALSE]) / Matrix::colSums(data)
   percent.ribo <- Matrix::colSums(data[rp.genes, , drop = FALSE]) / Matrix::colSums(data)
   
-  #remove mitochondrial and ribosomal genes from the dataset
   data <- data[!rownames(data) %in% mt.genes, ]
   data <- data[!rownames(data) %in% rp.genes, ]
   
-  #Create a Seurat object that only includes genes that are expressed in 3 or more cells (with over 200 genes total)
+  # Create a Seurat object that only includes genes that are expressed in 3 or more cells (with over 200 features total)
   seu <- CreateSeuratObject(counts = data, min.cells = 3, min.features = 200, project = sample_names[i])
   seu <- AddMetaData(seu, percent.mito, col.name = "percent.mito")
   seu <- AddMetaData(seu, percent.ribo, col.name = "percent.ribo")
   
+  # Timepoint metadata
   seu$timepoint <- if (grepl("T24", sample_names[i])) {
     "24hrs"
   } else if (grepl("T48", sample_names[i])) {
@@ -74,6 +74,7 @@ for (i in seq_along(data_dirs)) {
     "cycling"
   }
 
+  # Experimental metadata
   seu$collection <- if (grepl("2018", sample_names[i])) "2018" else "2020"
   seu$celltype <- if (grepl("leukocytes", sample_names[i])) "leukocytes" else "mesenchyme"
   seu$sample <- sample_names[i]
@@ -91,16 +92,9 @@ for (i in seq_along(data_dirs)) {
     seu <- subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1 & doublet_score < 0.4)
   }
 
-  #Normalisation taken from Phoebe's code - needs checking
+  # Normalisation and variable features
   seu <- NormalizeData(seu)
   seu <- FindVariableFeatures(seu, nfeatures = 2000)
-  
-  #Dimensionality reduction taken from Phoebe's code
-  #seu <- ScaleData(seu)
-  #seu <- RunPCA(seu, npcs = 20)
-  #seu <- RunUMAP(seu, reduction = "pca", dims = 1:20)
-  #seu <- FindNeighbors(seu, dims = 1:20)
-  #seu <- FindClusters(seu, resolution = 0.2)
   
   seurat_objects[[sample_names[i]]] <- seu
   
@@ -109,27 +103,25 @@ for (i in seq_along(data_dirs)) {
 }
 
 ```
+
 Integrate Immune and Stromal cell data
 
 ```{r, echo=false}
-## 🔗 Integration and Clustering by cell type
-
 # Define sample groupings by cell type
 leukocyte_samples <- c(
   "2018_control_leukocytes", "2020_control_leukocytes",
   "2018_T24_repairing_leukocytes", "2020_T48_repairing_leukocytes"
 )
-
 mesenchyme_samples <- c(
   "2018_control_mesenchyme", "2020_control_mesenchyme",
   "2018_T24_repairing_mesenchyme", "2020_T48_repairing_mesenchyme"
 )
 
-# Generalized loader function
+# Generalised loader function
 load_samples <- function(sample_names) {
   lapply(sample_names, function(name) {
     file_path <- paste0("processed_", name, ".rds")
-    message("Reading file: ", file_path)  # This will show the full file path being read
+    message("Reading file: ", file_path)  # Tracking file processing
     seu <- readRDS(file_path)
     seu$sample <- name
     return(seu)
@@ -140,24 +132,29 @@ load_samples <- function(sample_names) {
 leukocyte_objects <- load_samples(leukocyte_samples)
 mesenchyme_objects <- load_samples(mesenchyme_samples)
 
-# Check if doublet_score is properly added
+#Number of features/cells before filtering in each dataset
+for (i in mesenchyme_objects) {
+    print(dim(i))
+}
+
+# Double check doublet filtering
 lapply(leukocyte_objects, function(seu) head(seu@meta.data$doublet_score))
 lapply(mesenchyme_objects, function(seu) head(seu@meta.data$doublet_score))
 
 
-#QC Filtering Function
+# Generalised QC filtering function (double check from original processing)
 qc_filter <- function(seu_list) {
   lapply(seu_list, function(seu) {
     subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mito < 0.1 & doublet_score < 0.4)
   })
 }
 
-#Apply QC Filter
+# Apply QC Filter
 leukocyte_objects <- qc_filter(leukocyte_objects)
 mesenchyme_objects <- qc_filter(mesenchyme_objects)
 
 
-#Integration: Leukocytes
+# - - - Integration: Leukocytes - - -
 # Find anchors and common genes
 anchors_leuk <- FindIntegrationAnchors(object.list = leukocyte_objects, dims = 1:10)
 genes_leuk <- Reduce(intersect, lapply(leukocyte_objects, rownames))
@@ -173,16 +170,18 @@ leuk_combined <- RunUMAP(leuk_combined, reduction = "pca", dims = 1:10)
 leuk_combined <- FindNeighbors(leuk_combined, dims = 1:10)
 leuk_combined <- FindClusters(leuk_combined, resolution = 0.5)
 
-# Save
 #saveRDS(leuk_combined, file = "leukocytes_combined.rds")
 
-#Integration: Mesenchyme
+# - - - Integration: Mesenchyme - - -
+# Find anchors and common genes
 anchors_mes <- FindIntegrationAnchors(object.list = mesenchyme_objects, dims = 1:10)
 genes_mes <- Reduce(intersect, lapply(mesenchyme_objects, rownames))
 
+# Integrate
 mes_combined <- IntegrateData(anchorset = anchors_mes, features.to.integrate = genes_mes)
 DefaultAssay(mes_combined) <- "integrated"
 
+# Dimensionality reduction + clustering
 mes_combined <- ScaleData(mes_combined)
 mes_combined <- RunPCA(mes_combined, npcs = 20)
 mes_combined <- RunUMAP(mes_combined, reduction = "pca", dims = 1:10)
@@ -192,7 +191,7 @@ mes_combined <- FindClusters(mes_combined, resolution = 0.5)
 #saveRDS(mes_combined, file = "mesenchyme_combined.rds")
 
 ```
-Qaulity control and normalisation checks
+Quality control and normalisation checks
 
 ```{r, echo = false}
 leuk_combined$short_id <- recode(leuk_combined$orig.ident,
@@ -207,36 +206,50 @@ mes_combined$short_id <- recode(mes_combined$orig.ident,
   "2020_T48_repairing_mesenchyme" = "48_mes",
   "2020_control_mesenchyme" = "20_cont_mes")
 
-VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0)
-VlnPlot(mes_combined, features = "nCount_RNA", group.by = "seurat_clusters", pt.size = 0)
-VlnPlot(mes_combined, features = "percent.mito", group.by = "seurat_clusters", pt.size = 0)
-VlnPlot(mes_combined, features = "percent.ribo", group.by = "seurat_clusters", pt.size = 0)
+# Violin plots for feature number, gene counts, percent mitochondrial expression, and percent ribosomal expression, by cluster
+# - - - QC: Mesenchyme - - -
+VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0) + ggtitle("Number of Detected Genes per Stromal Cell, by Cluster") +
+  theme(plot.title = element_text(size = 13))
+VlnPlot(mes_combined, features = "nCount_RNA", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Total RNA Counts per Stromal Cell, by Cluster")+
+  theme(plot.title = element_text(size = 13))
+VlnPlot(mes_combined, features = "percent.mito", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Percentage Mitochondrial Gene Expression per Stromal Cell, by Cluster")+
+  theme(plot.title = element_text(size = 13))
+VlnPlot(mes_combined, features = "percent.ribo", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Percentage Ribosomal Gene Expression per Stromal Cell, by Cluster")+
+  theme(plot.title = element_text(size = 13))
 VlnPlot(leuk_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
-# Check if cells with high mito% have low features (potential low-quality)
-#FeatureScatter(leukocytes_combined, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
 
-#checking dimensionality reduction
+# - - - QC: Leukocyte - - -
+VlnPlot(leuk_combined, features = "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Number of Detected Genes per Immune Cell, by Cluster") +
+  theme(plot.title = element_text(size = 13))
+VlnPlot(leuk_combined, features = "nCount_RNA", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Total RNA Counts per Immune Cell, by Cluster")+
+  theme(plot.title = element_text(size = 13))
+VlnPlot(leuk_combined, features = "percent.mito", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Percentage Mitochondrial Gene Expression per Immune Cell, by Cluster")+
+  theme(plot.title = element_text(size = 12))
+VlnPlot(leuk_combined, features = "percent.ribo", group.by = "seurat_clusters", pt.size = 0)+ ggtitle("Percentage Ribosomal Gene Expression per Immune Cell, by Cluster")+
+  theme(plot.title = element_text(size = 13))
+VlnPlot(leuk_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
+
+
+# Checking dimensionality reduction (leukocyte)
 print(leuk_combined[["pca"]], dims = 1:5, nfeatures = 5)
 VizDimLoadings(leuk_combined, dims = 1:2, reduction = "pca")
 DimPlot(leuk_combined, reduction = "pca") + NoLegend()
 DimHeatmap(leuk_combined, dims = 1:5, cells = 500, balanced = TRUE)
 ElbowPlot(leuk_combined)  + ggtitle("Immune cell subset")
-#Elbow plot shows most SD between 1 and 10
 
-VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
-VlnPlot(mes_combined, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
-#VlnPlot(mes_combined, features = "percent.mt", group.by = "short_id", pt.size = 0)
-VlnPlot(mes_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
-# Check if cells with high mito% have low features (potential low-quality)
-#FeatureScatter(mes_combined, feature1 = "percent.mt", feature2 = "nFeature_RNA", group.by="short_id")
-
-#checking dimensionality reduction
+#checking dimensionality reduction (mesenchyme)
 print(mes_combined[["pca"]], dims = 1:5, nfeatures = 5)
 VizDimLoadings(mes_combined, dims = 1:2, reduction = "pca")
 DimPlot(mes_combined, reduction = "pca") + NoLegend()
 DimHeatmap(mes_combined, dims = 1:5, cells = 500, balanced = TRUE)
 ElbowPlot(mes_combined)  + ggtitle("Mesenchyme subset")
-#Elbow plot shows most SD between 1 and 10
+
+
+# Repeated QC checks, by experimental condition
+VlnPlot(mes_combined, features = "nFeature_RNA", group.by = "short_id", pt.size = 0)
+VlnPlot(mes_combined, features = "nCount_RNA", group.by = "short_id", pt.size = 0)
+#VlnPlot(mes_combined, features = "percent.mt", group.by = "short_id", pt.size = 0)
+VlnPlot(mes_combined, features = "percent.ribo", group.by = "short_id", pt.size = 0)
 
 #mes_combined <- RunTSNE(mes_combined, dims = 1:15)
 #DimPlot(mes_combined, reduction = "tsne")
@@ -247,8 +260,8 @@ ElbowPlot(mes_combined)  + ggtitle("Mesenchyme subset")
 Check dimensionality reduction and view UMAP
 
 ```{r, echo=false}
-DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of all Leukocytes")
-DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of all Stromal cells")
+DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters") + ggtitle("UMAP of Unidentified Immune Cells")+ theme(legend.position = "none")
+DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "seurat_clusters")+ theme(legend.position = "none")
 
 ```
 Running a UMAP for all samples
@@ -309,62 +322,75 @@ FeaturePlot(all_combined, reduction = "umap", features = "Mrc1", ncol=1, pt.size
 
 Immune Cell Cluster Identification
 ```{r, echo=false}
-#cluster labelling from Phoebe's script
+#cluster labelling and identification
 
-#FeaturePlot(leuk_combined, reduction = "umap", features = cDC2, ncol=4, pt.size = 0.5, order=TRUE, min.cutoff = 0)
+cluster_colors <- c(
+  "Neut" = "#F8766D",
+  "Mono/Macs" = "#D39200",
+  "NK" = "#00BA38",
+  "DC" = "#00BFC4",
+  "Tc" = "#619CFF",
+  "Bc" = "#C77CFF"
+)
+
+
+# Timepoint metadata
 leuk_combined$group <- factor(x=leuk_combined$timepoint, levels = c("control", "24hrs", "48hrs"))
-FeatureScatter(leuk_combined, feature1 = "nFeature_RNA", feature2 = "Arg1")
+#FeaturePlot(leuk_combined, reduction = "umap", features = cDC2, ncol=4, pt.size = 0.5, order=TRUE, min.cutoff = 0)
+#FeatureScatter(leuk_combined, feature1 = "nFeature_RNA", feature2 = "Arg1")
 
-#use gene expression to identify clusters
+# Use gene expression to identify clusters
 neutrophils <- c("S100a8","S100a9", "Cxcr2" ) #"Lcn2", "Elane", "Mmp8"
 macrophages <- c("Itgam", "Zeb2", "Cd68", "Csf1r", "Fcgr1", "Adgre1")
 mono <- c("Ly6c2", "Ccr2", "Cd14", "Cx3cr1")
 NK <- c("Nkg7", "Gzma", "Gzmb")
-DC <- c("Clec9a", "Clec10a", "Cd209a")
+DC <- c("Clec9a", "Clec10a", "Cd209a", "Xcr1", "Batf3")
 Tc <- c("Cd3e", "Cd3d", "Cd3g")
 Bc <- c("Cd79a", "Cd79b", "Btla")
 #tregs <- c("Foxp3", "Il2ra", "Ctla4")
 Eo <- c("Siglecf")
 
 
-# STEP 1: Identify markers for all clusters
+# Identify markers for all clusters
 all_markers <- FindAllMarkers(leuk_combined,
                                only.pos = TRUE,
                                min.pct = 0.25,
                                logfc.threshold = 0.25)
 
-# STEP 2: Filter to get top 20 markers per cluster
+# Filter to get top 20 markers per cluster
 top_markers <- all_markers %>%
   group_by(cluster) %>%
   slice_max(n = 20, order_by = avg_log2FC)
 
-# STEP 3: Save to CSV for offline review
+# Save to CSV for offline review
 write.csv(top_markers, "top20_markers_per_cluster.csv", row.names = FALSE)
-
-
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Siglecf", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Siglecf - Eosinophils")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Ccr3", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Ccr3 - Eosinophils")
-#FeaturePlot(leuk_combined, reduction = "umap", features = "Il5ra", ncol=1, pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Il5ra - Eosinophils")
 
 #VlnPlot(object = leuk_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
 
-DotPlot(leuk_combined, assay = "RNA", features = Eo, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
-  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text((size=10))) + ggtitle("Gene markers for Eosinophils")
+# Dot plot
+DotPlot(leuk_combined, assay = "RNA", features = Tc, cols = c("lavender", "#619CFF"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text((size=10))) + ggtitle("Gene markers for T Cells")+ xlab('Gene Marker') +  ylab('Cluster')
+# UMAP overlay plot
+FeaturePlot(leuk_combined, reduction = "umap", features = "Cd3e", col = c("lavender","#619CFF"), pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Cd3e - T Cells")
 ```
 Stromal Cell Cluster Identification
 
 ```{r, echo=false}
-#cluster labelling from Phoebe's script
+#cluster labelling and identification
 
+cluster_colors <- c(
+  "Fibro" = "#F8766D",
+  "Pericytes" = "#D39200",
+  "vSMCs" = "#00BA38",
+  "MET" = "#619CFF",
+  "Epi" = "#C77CFF"
+)
+
+# Timepoint metadata
 DimPlot(mes_combined, pt.size = 0.5, label.size = 5, label=TRUE, split.by = "timepoint")
 mes_combined$timepoint <- factor(mes_combined$timepoint, levels = c("cycling", "24hrs", "48hrs"))
 
-
-DimPlot(mes_combined, pt.size = 0.5, label.size = 5, label=TRUE)
-#VlnPlot(mes_combined, features= c("Pdgfrb", "Pdgfra", "Mcam", "Cspg4", "Hif1a"),  assay="RNA", ncol=5, pt.size=0)
-#FeatureScatter(mes_combined, feature1 = "Pdgfrb", feature2 = "Krt18", group.by = "timepoint")
-
-#use gene expression to identify clusters
+# Use gene expression to identify clusters
 fibroblasts <- c("Cd34", "Pdgfra", "Mfap4", "Mfap5", "Fbln1", "Fbln2", "Spon2", "Col1a1", "Col3a1")
 #"Vim", "Des", "Thy1", "Pdgfrb", "Kcnj8", "Krt8", "Krt19", "Sdc4")
 perivascular <- c("Mcam", "Acta2", "Cspg4")
@@ -379,6 +405,7 @@ F3 <- c("Clec3b", "Fap", "Cd55", "Vit", "Col14a1", "Cxcl16")
 F4 <- c("Epcam", "Alcam", "Cd24a", "Clu", "Krt18", "Sdc4", "Ndrg1")
 F5 <- c("Casp3", "Casp9", "Trp53", "Bax", "Col7a1", "Scube1") #mitochondrial genes and cell death - dead/apoptotic cells which should be excluded
 
+# Feature plot for each gene from a specified list
 for (i in F4) {
   message("Processing: ", i)
   title <- paste(i,"- Transition")
@@ -386,47 +413,35 @@ for (i in F4) {
   print(fp)
 }
 
-# STEP 1: Identify markers for all clusters
-#all_markers <- FindAllMarkers(mes_combined,
- #                              only.pos = TRUE,
-  #                             min.pct = 0.25,
-   #                            logfc.threshold = 0.25)
+# Identify markers for all clusters
+all_markers <- FindAllMarkers(mes_combined,
+                               only.pos = TRUE,
+                               min.pct = 0.25,
+                               logfc.threshold = 0.25)
 
-# STEP 2: Filter to get top 20 markers per cluster
-#top_markers <- all_markers %>%
- # group_by(cluster) %>%
-  #slice_max(n = 20, order_by = avg_log2FC)
+# Filter to get top 20 markers per cluster
+top_markers <- all_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 20, order_by = avg_log2FC)
 
-# STEP 3: Save to CSV for offline review
-#write.csv(top_markers, "top20_markers_per_cluster_mes.csv", row.names = FALSE)
+# Save to CSV for offline review
+write.csv(top_markers, "top20_markers_per_cluster_mes.csv", row.names = FALSE)
 
 
 #VlnPlot(object = mes_combined, features = macrophages, ncol = 4, assay = "RNA", pt.size = 0)
 
-DotPlot(mes_combined, assay = "RNA", features = F5, cols = c("lavender", "darkblue"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
-  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text(size=10)) + ggtitle("Gene Markers for F5")
+# Dot plot
+DotPlot(mes_combined, assay = "RNA", features = vSMCs, cols = c("lavender", "#00BA38"), dot.min = 0, col.min = 0, dot.scale = 6, scale.by = "radius") + RotatedAxis()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=8), axis.text.y = element_text(size=10)) + ggtitle("Gene Markers for vSMCs")+ xlab('Gene Marker') +  ylab('Cluster')
+# UMAP overlay plot
+FeaturePlot(mes_combined, reduction = "umap", features = "Epcam", col = c("lavender","#C77CFF"), pt.size = 0.5, order=TRUE, min.cutoff = 0) + ggtitle("Epcam - Epithelial Cells")
 
-for (tp in unique(mes_combined$timepoint)) {
-  subset_obj <- subset(mes_combined, subset = timepoint == tp)
-  p <- DimPlot(subset_obj, reduction = "umap", label = TRUE, pt.size = 0.5) +
-    ggtitle(paste("UMAP of Stromal Cells at Timepoint:", tp))
-  print(p)
-}
-
-FeaturePlot(mes_combined, features = c("Cd34", "Mfap5", "Pdgfra"))  # Canonical fibroblasts
-VlnPlot(mes_combined, pt.size=0, features = c("Cd34"))  # Canonical fibroblasts
+# Additional plots
+FeaturePlot(mes_combined, features = c("Cd34", "Mfap5", "Pdgfra"))
+VlnPlot(mes_combined, pt.size=0, features = c("Cd34")) 
 VlnPlot(mes_combined, pt.size=0, features = c("Mfap5"))
 VlnPlot(mes_combined, pt.size=0, features = c("Pdgfra"))
-mes.markers <- FindAllMarkers(mes_combined, only.pos = TRUE)
-mes.markers %>%
-    group_by(cluster) %>%
-    dplyr::filter(avg_log2FC > 1)
-mes.markers %>%
-    group_by(cluster) %>%
-    dplyr::filter(avg_log2FC > 1) %>%
-    slice_head(n = 5) %>%
-    ungroup() -> top5
-DoHeatmap(mes_combined, features = top5$gene) + NoLegend()
+
 ```
 UMAP of Identified Immune Cells
 
@@ -459,7 +474,10 @@ leuk_combined <- subset(leuk_combined, idents = c("15", "16"), invert = TRUE)
 leuk_combined$cell_type <- Idents(leuk_combined)
 leuk_combined$cell_type_broad <- Idents(leuk_combined)
 
+# UMAP of identified immune cells
 DimPlot(leuk_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Immune Cells")
+
+# UMAPs of identified immune cells, by timepoint
 for (tp in unique(leuk_combined$timepoint)) {
   subset_obj <- subset(leuk_combined, subset = timepoint == tp)
   p <- DimPlot(subset_obj, reduction = "umap", label = TRUE, pt.size = 0.5) +
@@ -515,17 +533,14 @@ broad_cluster_ids <- c(
 
 # Rename cluster identities
 mes_combined <- RenameIdents(mes_combined, broad_cluster_ids)
-
-# Save these new identities into metadata column
 mes_combined$cell_type_broad <- Idents(mes_combined)
-
-# Set broad cell types as the active identity
 Idents(mes_combined) <- "cell_type_broad"
 
-
+# UMAP of identified stromal cells (broad used in analysis)
 DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type_broad") + ggtitle("UMAP of identified Stromal Cells (Broad)")
 DimPlot(mes_combined, reduction = "umap", label = TRUE, pt.size = 0.5, group.by = "cell_type") + ggtitle("UMAP of identified Stromal Cells (Specific)")
 
+# UMAPs of identified stromal cells, by timepoint
 for (tp in unique(mes_combined$timepoint)) {
   subset_obj <- subset(mes_combined, subset = timepoint == tp)
   p <- DimPlot(subset_obj, reduction = "umap", group.by="cell_type_broad", label = TRUE, pt.size = 0.5) +
@@ -575,7 +590,7 @@ ggplot(leuk_df, aes(x = "", y = Proportion, fill = Cell_Type)) +
   geom_bar(stat = "identity", width = 1) + 
   coord_polar("y") + 
   facet_wrap(~ Timepoint) + 
-  labs(title = "Leukocyte Cell Type Proportions by Timepoint") + 
+  labs() + 
   theme_void()
 
 
@@ -611,24 +626,28 @@ ggplot(mes_df, aes(x = "", y = Proportion, fill = Cell_Type)) +
 
 
 ```
-Merge objects into one
+Merge objects into one for further analysis
 
 ```{r}
+#CellChat function to merge mes and leuk objects
 merged_seurat <- merge(mes_combined, y=leuk_combined, add.cell.ids = c("mes", "leuk"), merge.data = TRUE)
 LayerData(merged_seurat)[1:10,1:15]
 merged_seurat[["RNA"]] <-JoinLayers(merged_seurat[["RNA"]])
 
-Idents(merged_seurat) <- "Cell_Type"  # or whatever metadata column holds cell types
+Idents(merged_seurat) <- "cell_type_broad"  # or whatever metadata column holds cell types
 subset_cells <- subset(
   merged_seurat, 
   idents = c("Fibroblasts", "MET", "Neut", "Mono/Macs", "Tc", "NK", "Bc", "DC")
 )
 
+#Split by timepoint and save individually
 Idents(subset_cells) <- "timepoint"  # e.g. "Control", "24h", "48h"
 
-control_seurat <- subset(subset_cells, idents = "Control")
-h24_seurat     <- subset(subset_cells, idents = "24h")
-h48_seurat     <- subset(subset_cells, idents = "48h")
+control_seurat <- subset(subset_cells, idents = "cycling")
+h24_seurat     <- subset(subset_cells, idents = "24hrs")
+h48_seurat     <- subset(subset_cells, idents = "48hrs")
+
+print(unique(control_seurat$cell_type_broad))
 
 saveRDS(control_seurat, file="2025_MSc_control.rds")
 saveRDS(h24_seurat, file="2025_MSc_24.rds")
